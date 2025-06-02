@@ -1,4 +1,4 @@
---@description ImGui; Main; Insert Chord.lua
+--@description ImGui; Main; Insert Chord
 --@version 1.0
 --@author MaxMusicMax
 -- toggle-test
