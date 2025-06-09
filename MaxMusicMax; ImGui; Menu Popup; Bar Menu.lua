@@ -5,6 +5,9 @@
 -- https://github.com/cfillion/reaimgui/releases
 -- #######################################
 -- #######################################
+local color_item_empty = "#000000"
+-- #######################################
+-- #######################################
 -- =======================
 -- 11111111111111111111111111111111111
 -- menu_structure___
@@ -20,6 +23,7 @@
 -- library_insert_midi_program_change
 -- library_stretch_marker
 -- item_navigation_content_show
+-- library_tempo_project
 
 -- print_rs
 -- console_window_destroy
@@ -33,6 +37,9 @@
 -- get_playing_midi
 -- get_name_note_current
 -- insert_midi_chord
+-- fnc_tempo_project
+-- fnc_numerator_time_signature
+-- fnc_denominator_time_signature
 -- fnc_transpose_value
 -- fnc_note_item_length
 -- MoveMutedItemsToNewTrack
@@ -81,6 +88,7 @@
 -- DeleteProgramChangeAtCursor
 -- InsertMidiInsertCC
 -- InsertTempoMarkerUserInputs
+-- ModifyTempoInTimeSelection
 -- DetectAndMarkSibilance
 -- CreateOrRemoveRegionFromTimeSelection
 -- SelectItemsInTimeSelection
@@ -551,6 +559,91 @@ function insert_midi_chord(note_length, chord_str, transpose, velocity, item_nam
 	-- Ограничение значений
 	if not velocity or velocity < 1 then velocity = 1 end
 	if velocity > 127 then velocity = 127 end
+	if not transpose or transpose < -24 then transpose = -24 end
+	if transpose > 24 then transpose = 24 end
+
+	-- Получаем выделенный трек
+	local track = reaper.GetSelectedTrack(0, 0)
+	if not track then return end
+
+	-- Получаем позицию курсора
+	local start_pos = reaper.GetCursorPosition()
+
+	-- Парсим длительность
+	local qn_length
+	if note_length:match("^(%d+)/(%d+)$") then
+		-- Формат "N/M" (например, "1/2", "1/4") — доля такта
+		local numerator, denominator = note_length:match("^(%d+)/(%d+)$")
+		numerator, denominator = tonumber(numerator), tonumber(denominator)
+		if numerator and denominator and denominator > 0 then
+			qn_length = (numerator / denominator) * 4 -- Доля такта * 4 четвертные ноты
+		end
+	elseif note_length:match("^%d+$") then
+		-- Целое число — количество тактов (например, "64", "8")
+		local bars = tonumber(note_length)
+		if bars and bars > 0 then
+			qn_length = bars * 4 -- 1 такт = 4 четвертные ноты
+		end
+	end
+
+	-- Проверяем корректность длины
+	if not qn_length or qn_length <= 0 then return end
+
+	-- Вычисляем длительность в секундах через TimeMap
+	local start_qn = reaper.TimeMap2_timeToQN(0, start_pos)
+	local end_qn = start_qn + qn_length
+	local end_time = reaper.TimeMap2_QNToTime(0, end_qn)
+	local length_sec = end_time - start_pos
+
+	-- Создаём MIDI-айтем
+	local item = reaper.CreateNewMIDIItemInProj(track, start_pos, start_pos + length_sec)
+	if not item then return end
+	reaper.SetMediaItemSelected(item, true)
+
+	-- Получаем MIDI-тейк
+	local take = reaper.GetMediaItemTake(item, 0)
+	if not take then return end
+	
+	-- Устанавливаем имя тейка, если передано
+	if item_name and item_name ~= "1" then
+		reaper.GetSetMediaItemTakeInfo_String(take, "P_NAME", item_name, true)
+	end
+
+	-- Конвертируем длину айтема в PPQ (MIDI-разрешение)
+	local ppq_start = reaper.MIDI_GetPPQPosFromProjTime(take, start_pos)
+	local ppq_end = reaper.MIDI_GetPPQPosFromProjTime(take, start_pos + length_sec)
+	local note_length_ppq = ppq_end - ppq_start
+	
+	-- Таблица для перевода нот в MIDI-номера
+	local notes = { ["C"] = 0, ["C#"] = 1, ["D"] = 2, ["D#"] = 3, ["E"] = 4, 
+		["F"] = 5, ["F#"] = 6, ["G"] = 7, ["G#"] = 8, ["A"] = 9, ["A#"] = 10, ["B"] = 11 }
+
+	-- Разбираем аккорд в MIDI-ноты
+	local chord_notes = {}
+	for note in chord_str:gmatch("[^, ]+") do
+		local name, octave = note:match("([A-G]#?)(%d)")
+		if name and octave then
+			local midi_note = notes[name] + (tonumber(octave) * 12) + transpose + 12
+			if midi_note >= 0 and midi_note <= 127 then
+				table.insert(chord_notes, midi_note)
+			end
+		end
+	end
+
+	-- Вставляем ноты с корректной длиной и громкостью
+	for _, pitch in ipairs(chord_notes) do
+		reaper.MIDI_InsertNote(take, false, false, ppq_start, ppq_start + note_length_ppq, 0, pitch, velocity, false)
+	end
+
+	-- Обновляем MIDI
+	reaper.MIDI_Sort(take)
+	reaper.UpdateArrange()
+end
+
+function insert_midi_chord_v1(note_length, chord_str, transpose, velocity, item_name)
+	-- Ограничение значений
+	if not velocity or velocity < 1 then velocity = 1 end
+	if velocity > 127 then velocity = 127 end
 	
 	-- if not transpose or transpose < -12 then transpose = -12 end
 	-- if transpose > 12 then transpose = 12 end
@@ -627,6 +720,54 @@ function insert_midi_chord(note_length, chord_str, transpose, velocity, item_nam
 	-- Обновляем MIDI
 	reaper.MIDI_Sort(take)
 	reaper.UpdateArrange()
+end
+-- ##################################################
+-- ##################################################
+function SetFixedTempoAndTimeSignatureAtEditCursor(tempo, numerator, denominator)
+	local cursor_pos = reaper.GetCursorPosition()
+
+	reaper.SetTempoTimeSigMarker(0,		-- проект
+		-1,								-- ptidx = -1 (добавить новый маркер)
+		cursor_pos,						-- timepos
+		-1,								-- measurepos (не используется)
+		-1,								-- beatpos (не используется)
+		tempo,							-- заданный темп
+		numerator,					-- размер такта числитель numerator
+		denominator,					-- размер такта знаменатель denominator
+		false)							-- lineartempo: false = мгновенно
+		
+		reaper.JS_Window_SetFocus(reaper.GetMainHwnd())
+		reaper.JS_Window_SetForeground(reaper.GetMainHwnd())
+		
+		reaper.SetEditCurPos(cursor_pos + 0.0001, false, false)
+		reaper.SetEditCurPos(cursor_pos, false, false)
+		
+		reaper.UpdateArrange()
+		
+end
+-- ##################################################
+-- ##################################################
+-- fnc_tempo_project
+function fnc_tempo_project (tempo_project_value)
+	reaper.SetExtState("time_signature_zbsatpkuyg", "tempo_project_zbsatpkuyg", tostring(tempo_project_value), false)
+	-- checkbox_MoveEditCursor = reaper.GetExtState("insert_item_chord_ulaYkZjtGm", "transpose_value_ulaYkZjtGm")
+	-- print_rs (checkbox_MoveEditCursor)
+end
+-- ##################################################
+-- ##################################################
+-- fnc_numerator_time_signature
+function fnc_numerator_time_signature (numerator_time_signature_value)
+	reaper.SetExtState("time_signature_zbsatpkuyg", "numerator_time_signature_zbsatpkuyg", tostring(numerator_time_signature_value), false)
+	-- checkbox_MoveEditCursor = reaper.GetExtState("insert_item_chord_ulaYkZjtGm", "transpose_value_ulaYkZjtGm")
+	-- print_rs (checkbox_MoveEditCursor)
+end
+-- ##################################################
+-- ##################################################
+-- fnc_denominator_time_signature
+function fnc_denominator_time_signature (denominator_time_signature_value)
+	reaper.SetExtState("time_signature_zbsatpkuyg", "denominator_time_signature_zbsatpkuyg", tostring(denominator_time_signature_value), false)
+	-- checkbox_MoveEditCursor = reaper.GetExtState("insert_item_chord_ulaYkZjtGm", "transpose_value_ulaYkZjtGm")
+	-- print_rs (checkbox_MoveEditCursor)
 end
 -- ##################################################
 -- ##################################################
@@ -1151,6 +1292,85 @@ end
 -- ##################################################
 -- InsertEmptyItemWithNameAndColor
 function InsertEmptyItemWithNameAndColor(name, hex_color, item_length_3)
+	-- Начало блока отмены
+	reaper.Undo_BeginBlock()
+	-- Получаем позицию курсора редактирования
+	local cursor_pos = reaper.GetCursorPosition()
+	-- Получаем первый выделенный трек
+	local track = reaper.GetSelectedTrack(0, 0)
+	if track then
+		-- Создаём новый медиа-айтем
+		local item = reaper.AddMediaItemToTrack(track)
+		if item then
+			-- Устанавливаем позицию айтема на курсор
+			reaper.SetMediaItemInfo_Value(item, "D_POSITION", cursor_pos)
+			
+			local length
+			if item_length_3 then
+				-- Парсим длительность
+				local qn_length
+				if item_length_3:match("^(%d+)/(%d+)$") then
+					-- Формат "N/M" (например, "1/2", "1/4") — доля такта
+					local numerator, denominator = item_length_3:match("^(%d+)/(%d+)$")
+					numerator, denominator = tonumber(numerator), tonumber(denominator)
+					if numerator and denominator and denominator > 0 then
+						qn_length = (numerator / denominator) * 4 -- Доля такта * 4 четвертные ноты
+					end
+				elseif item_length_3:match("^%d+$") then
+					-- Целое число — количество тактов (например, "64", "8")
+					local bars = tonumber(item_length_3)
+					if bars and bars > 0 then
+						qn_length = bars * 4 -- 1 такт = 4 четвертные ноты
+					end
+				end
+				
+				if qn_length and qn_length > 0 then
+					-- Вычисляем длительность в секундах через TimeMap
+					local start_qn = reaper.TimeMap2_timeToQN(0, cursor_pos)
+					local end_qn = start_qn + qn_length
+					local end_time = reaper.TimeMap2_QNToTime(0, end_qn)
+					length = end_time - cursor_pos
+				else
+					-- Некорректный формат, возвращаем
+					return
+				end
+			else
+				-- Длина по умолчанию — один такт
+				local beat_length = reaper.TimeMap2_QNToTime(0, 4) - reaper.TimeMap2_QNToTime(0, 0)
+				length = beat_length
+			end
+			
+			-- Устанавливаем длину айтема
+			reaper.SetMediaItemInfo_Value(item, "D_LENGTH", length)
+			
+			-- Добавляем имя (текстовую заметку)
+			reaper.ULT_SetMediaItemNote(item, name)
+			
+			-- Преобразуем HEX-цвет в десятичный формат
+			if hex_color then
+				local r = tonumber(string.sub(hex_color, 2, 3), 16)
+				local g = tonumber(string.sub(hex_color, 4, 5), 16)
+				local b = tonumber(string.sub(hex_color, 6, 7), 16)
+				local color = reaper.ColorToNative(r, g, b) | 0x1000000
+				-- Устанавливаем цвет айтема
+				reaper.SetMediaItemInfo_Value(item, "I_CUSTOMCOLOR", color)
+			end
+			
+			-- Выделяем новый айтем
+			reaper.SetMediaItemSelected(item, true)
+			-- Перемещаем курсор к концу айтема
+			reaper.Main_OnCommand(reaper.NamedCommandLookup("41174"), 0) -- Item navigation: Move cursor to end of items
+			-- Снимаем выделение со всех айтемов
+			reaper.Main_OnCommand(reaper.NamedCommandLookup("40289"), 0) -- Item: Unselect (clear selection of) all items
+			
+			-- Обновляем проект
+			reaper.UpdateArrange()
+		end
+	end
+	reaper.Undo_EndBlock("Insert Empty Item with Name and Color", -1)
+end
+
+function InsertEmptyItemWithNameAndColor_v1(name, hex_color, item_length_3)
 	-- Начало блока отмены
 	reaper.Undo_BeginBlock()
 	-- Получаем позицию курсора редактирования
@@ -2372,13 +2592,79 @@ function InsertTempoMarkerUserInputs()
 		-- Проверяем, что все введенные значения корректны
 		if tempo and measure and beats then
 			-- Вставляем маркер изменения темпа
-			reaper.AddTempoTimeSigMarker(0, cursor_position, tempo, measure, beats, false)
-			else
+			-- reaper.AddTempoTimeSigMarker(0, cursor_position, tempo, measure, beats, false)
+
+			reaper.SetTempoTimeSigMarker(0,		-- проект
+			-1,								-- ptidx = -1 (добавить новый маркер)
+			cursor_position,						-- timepos
+			-1,								-- measurepos (не используется)
+			-1,								-- beatpos (не используется)
+			tempo,							-- заданный темп
+			measure,					-- размер такта числитель numerator
+			beats,					-- размер такта знаменатель denominator
+			false)
+			
+			reaper.JS_Window_SetFocus(reaper.GetMainHwnd())
+			reaper.JS_Window_SetForeground(reaper.GetMainHwnd())
+			
+			reaper.SetEditCurPos(cursor_position + 0.0001, false, false)
+			reaper.SetEditCurPos(cursor_position, false, false)
+		
+			reaper.UpdateArrange()
+			
+		else
 			-- Сообщаем об ошибке, если значения некорректны
 			reaper.ShowMessageBox("Некорректные значения. Попробуйте еще раз.", "Ошибка", 0)
 		end
 	end
+
 end
+-- ##################################################
+-- ##################################################
+-- ModifyTempoInTimeSelection
+function ModifyTempoInTimeSelection(mode)
+  -- Проверяем валидность аргумента
+  if mode ~= 'plus' and mode ~= 'minus' then
+    -- reaper.ShowMessageBox('Ошибка: Неверный режим. Используйте "plus" или "minus"', 'Ошибка', 0)
+    return
+  end
+
+  -- Получаем границы Time Selection
+  local start_time, end_time = reaper.GetSet_LoopTimeRange(0, 0, 0, 0, false)
+  if start_time == end_time then
+    reaper.ShowMessageBox('Ошибка: Не установлена зона Time Selection', 'Ошибка', 0)
+    return
+  end
+
+  -- Получаем количество маркеров темпа
+  local num_markers = reaper.CountTempoTimeSigMarkers(0)
+  local modified = 0
+
+  -- Перебираем маркеры
+  for i = 0, num_markers - 1 do
+    local retval, time_pos, measure_pos, beat_pos, bpm, timesig_num, timesig_denom, lineartempo = reaper.GetTempoTimeSigMarker(0, i)
+    
+    if retval and time_pos >= start_time and time_pos <= end_time then
+      -- Изменяем BPM в зависимости от режима
+      local new_bpm = mode == 'plus' and bpm + 1 or bpm - 1
+      -- Устанавливаем новый маркер с обновлённым BPM
+      reaper.SetTempoTimeSigMarker(0, i, time_pos, measure_pos, beat_pos, new_bpm, timesig_num, timesig_denom, lineartempo)
+      modified = modified + 1
+    end
+  end
+
+  -- Обновляем таймлайн
+  reaper.UpdateTimeline()
+  
+  -- Сообщение о результате
+  if modified > 0 then
+    local action = mode == 'plus' and 'увеличен на 1' or 'уменьшен на 1'
+    -- reaper.ShowMessageBox('Темп ' .. action .. ' для ' .. modified .. ' маркеров в зоне Time Selection', 'Успех', 0)
+  else
+    reaper.ShowMessageBox('В зоне Time Selection нет маркеров темпа', 'Информация', 0)
+  end
+end
+-- ModifyTempoInTimeSelection
 -- ##################################################
 -- ##################################################
 -- DetectAndMarkSibilance
@@ -3585,6 +3871,7 @@ local menu_structure = {
 			{label = "Stretch Marker", show_content = "Stretch_Marker_Content_Show"},
 			{label = "Volume", show_content = "Item_Volume_Content_Show"},
 		}},
+		
 		{label = "TimeBase", show_content = "TimeBase_Content_Show"},
 		{label = "Tempo Envelope", show_content = "Tempo_Envelope_Content_Show"},
 		{label = "Track", children = {
@@ -3788,7 +4075,7 @@ local function main()
 		elseif selected_content == "Insert_Item_Chord_Content_Show" then
 			reaper.ImGui_SeparatorText(ctx, "Insert Item Chord")
 			
-			cboc2(" Insert Item Chord ", function()
+			cboc2(" Insert Empty Item Chord ", function()
 				selected_content = "Insert_Empty_Item_Chord_Content_Show"
 				reaper.SetExtState("MaxMusicMax_ImGuiAlphaWindow", "ImGuiCurrentMenuItem", selected_content, true) 
 			end, 0, 25)
@@ -3815,7 +4102,7 @@ local function main()
 			-- Слайдер Velocity от 1 до 127 с сохранением во временное хранилище
 			reaper.ImGui_Dummy(ctx, 0, 2)  -- Добавление вертикального пространства
 			
-			if reaper.ImGui_BeginTable(ctx, "Table", 3) then -- Создаём таблицу с 2 колонками
+			if reaper.ImGui_BeginTable(ctx, "Table", 3) then -- Создаём таблицу с 3 колонками
 				-- Первая колонка с фиксированной шириной 50px
 				reaper.ImGui_TableSetupColumn(ctx, "Col 1", reaper.ImGui_TableColumnFlags_WidthFixed(), 150)
 				reaper.ImGui_TableSetupColumn(ctx, "Col 2", reaper.ImGui_TableColumnFlags_WidthFixed(), 72)
@@ -4645,22 +4932,579 @@ local function main()
 			reaper.ImGui_InputText(ctx, '##delay', delayStr, reaper.ImGui_InputTextFlags_ReadOnly())
 		elseif selected_content == "Tempo_Envelope_Content_Show" then
 			reaper.ImGui_SeparatorText( ctx, "Tempo Envelope" )
-			cboc2 ( " Tempo envelope: Set display range... ", function() reaper.Main_OnCommand("40933", 0) end, 0, 25 )
+			
+			local tempo_project_zbsatpkuyg = reaper.GetExtState("time_signature_zbsatpkuyg", "tempo_project_zbsatpkuyg")
+			tempo_project_zbsatpkuyg = (tempo_project_zbsatpkuyg ~= "" and tonumber(tempo_project_zbsatpkuyg)) or 120
+			
+			local numerator_time_signature_zbsatpkuyg = reaper.GetExtState("time_signature_zbsatpkuyg", "numerator_time_signature_zbsatpkuyg")
+			numerator_time_signature_zbsatpkuyg = (numerator_time_signature_zbsatpkuyg ~= "" and tonumber(numerator_time_signature_zbsatpkuyg)) or 4
+			
+			local denominator_time_signature_zbsatpkuyg = reaper.GetExtState("time_signature_zbsatpkuyg", "denominator_time_signature_zbsatpkuyg")
+			denominator_time_signature_zbsatpkuyg = (denominator_time_signature_zbsatpkuyg ~= "" and tonumber(denominator_time_signature_zbsatpkuyg)) or 4
+			
+			reaper.ImGui_Dummy(ctx, 0, 5)  -- Добавление вертикального пространства
+			cboc2 ( "  Set Tempo And Time Signature At Edit Cursor  ", function() SetFixedTempoAndTimeSignatureAtEditCursor (tempo_project_zbsatpkuyg, numerator_time_signature_zbsatpkuyg, denominator_time_signature_zbsatpkuyg) end, 0, 30 )
+			reaper.ImGui_Dummy(ctx, 0, 5)  -- Добавление вертикального пространства
+			
+			reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Text(), HexToColor("#FFFF00")) -- Красный цвет (RGBA)
+			reaper.ImGui_Text(ctx, "BMP = " .. tempo_project_zbsatpkuyg .. ""  )
+			reaper.ImGui_Text(ctx, "Time Signature = " .. numerator_time_signature_zbsatpkuyg .. "/" .. denominator_time_signature_zbsatpkuyg )
+			reaper.ImGui_PopStyleColor(ctx)
+			
+			reaper.ImGui_Dummy(ctx, 0, 5)  -- Добавление вертикального пространства
+			
+			if reaper.ImGui_BeginTable(ctx, "Table", 3) then -- Создаём таблицу с 3 колонками
+
+			reaper.ImGui_TableSetupColumn(ctx, "Col 1", reaper.ImGui_TableColumnFlags_WidthFixed(), 130)
+			reaper.ImGui_TableSetupColumn(ctx, "Col 2", reaper.ImGui_TableColumnFlags_WidthFixed(), 105)
+			reaper.ImGui_TableSetupColumn(ctx, "Col 3", reaper.ImGui_TableColumnFlags_WidthFixed(), 120)
+
+			reaper.ImGui_TableNextRow(ctx)
+			
+			-- Col 1 ————————————————————————————————————————
+			reaper.ImGui_TableNextColumn(ctx)
+			
+			local changed_tempo_project
+			changed_tempo_project, tempo_project_zbsatpkuyg = reaper.ImGui_InputText(ctx, '##tempo_project_zbsatpkuyg', tempo_project_zbsatpkuyg )
+			if changed_tempo_project then
+				tempo_project_zbsatpkuyg = tempo_project_zbsatpkuyg:gsub('%D', '') -- Удаляет все, кроме цифр
+			end
+			reaper.SetExtState("time_signature_zbsatpkuyg", "tempo_project_zbsatpkuyg", tempo_project_zbsatpkuyg, false)
+
+			
+			-- library_tempo_project
+			local library_tempo_project = {
+				key = "Tempo Project", default_open = true, children = {
+					-- {spacing_vertical = "0"},
+					-- {separator_horizontal = "3", separator_color = "#3F3F48", separator_length = 148 },
+					-- {spacing_vertical = "7"},
+					
+					{key = "001-059", children = {
+						{key = "001-019", children = {
+							{key = "001", action_function = function() fnc_tempo_project (1) end},
+							{key = "002", action_function = function() fnc_tempo_project (2) end},
+							{key = "003", action_function = function() fnc_tempo_project (3) end},
+							{key = "003", action_function = function() fnc_tempo_project (3) end},
+							{key = "004", action_function = function() fnc_tempo_project (4) end},
+							{key = "005", action_function = function() fnc_tempo_project (5) end},
+							{key = "006", action_function = function() fnc_tempo_project (6) end},
+							{key = "007", action_function = function() fnc_tempo_project (7) end},
+							{key = "008", action_function = function() fnc_tempo_project (8) end},
+							{key = "009", action_function = function() fnc_tempo_project (9) end},
+							{key = "010", action_function = function() fnc_tempo_project (10) end},
+							{key = "011", action_function = function() fnc_tempo_project (11) end},
+							{key = "012", action_function = function() fnc_tempo_project (12) end},
+							{key = "013", action_function = function() fnc_tempo_project (13) end},
+							{key = "014", action_function = function() fnc_tempo_project (14) end},
+							{key = "015", action_function = function() fnc_tempo_project (15) end},
+							{key = "016", action_function = function() fnc_tempo_project (16) end},
+							{key = "017", action_function = function() fnc_tempo_project (17) end},
+							{key = "018", action_function = function() fnc_tempo_project (18) end},
+							{key = "019", action_function = function() fnc_tempo_project (19) end},
+						},},
+						{key = "020-039", children = { -- default_open = true, 
+							{key = "020", action_function = function() fnc_tempo_project (20) end},
+							{key = "021", action_function = function() fnc_tempo_project (21) end},
+							{key = "022", action_function = function() fnc_tempo_project (22) end},
+							{key = "023", action_function = function() fnc_tempo_project (23) end},
+							{key = "024", action_function = function() fnc_tempo_project (24) end},
+							{key = "025", action_function = function() fnc_tempo_project (25) end},
+							{key = "026", action_function = function() fnc_tempo_project (26) end},
+							{key = "027", action_function = function() fnc_tempo_project (27) end},
+							{key = "028", action_function = function() fnc_tempo_project (28) end},
+							{key = "029", action_function = function() fnc_tempo_project (29) end},
+							{key = "030", action_function = function() fnc_tempo_project (30) end},
+							{key = "031", action_function = function() fnc_tempo_project (31) end},
+							{key = "032", action_function = function() fnc_tempo_project (32) end},
+							{key = "033", action_function = function() fnc_tempo_project (33) end},
+							{key = "034", action_function = function() fnc_tempo_project (34) end},
+							{key = "035", action_function = function() fnc_tempo_project (35) end},
+							{key = "036", action_function = function() fnc_tempo_project (36) end},
+							{key = "037", action_function = function() fnc_tempo_project (37) end},
+							{key = "038", action_function = function() fnc_tempo_project (38) end},
+							{key = "039", action_function = function() fnc_tempo_project (39) end},
+						},},
+						{key = "040-059", children = { -- default_open = true, 
+							{key = "040", action_function = function() fnc_tempo_project (40) end},
+							{key = "041", action_function = function() fnc_tempo_project (41) end},
+							{key = "042", action_function = function() fnc_tempo_project (42) end},
+							{key = "043", action_function = function() fnc_tempo_project (43) end},
+							{key = "044", action_function = function() fnc_tempo_project (44) end},
+							{key = "045", action_function = function() fnc_tempo_project (45) end},
+							{key = "046", action_function = function() fnc_tempo_project (46) end},
+							{key = "047", action_function = function() fnc_tempo_project (47) end},
+							{key = "048", action_function = function() fnc_tempo_project (48) end},
+							{key = "049", action_function = function() fnc_tempo_project (49) end},
+							{key = "050", action_function = function() fnc_tempo_project (50) end},
+							{key = "051", action_function = function() fnc_tempo_project (51) end},
+							{key = "052", action_function = function() fnc_tempo_project (52) end},
+							{key = "053", action_function = function() fnc_tempo_project (53) end},
+							{key = "054", action_function = function() fnc_tempo_project (54) end},
+							{key = "055", action_function = function() fnc_tempo_project (55) end},
+							{key = "056", action_function = function() fnc_tempo_project (56) end},
+							{key = "057", action_function = function() fnc_tempo_project (57) end},
+							{key = "058", action_function = function() fnc_tempo_project (58) end},
+							{key = "059", action_function = function() fnc_tempo_project (59) end},
+						},},
+						
+					},},
+					
+					{key = "060-179", default_open = true, children = { -- default_open = true, 
+						{key = "060-079", children = { -- default_open = true, 
+							{key = "060", action_function = function() fnc_tempo_project (60) end},
+							{key = "061", action_function = function() fnc_tempo_project (61) end},
+							{key = "062", action_function = function() fnc_tempo_project (62) end},
+							{key = "063", action_function = function() fnc_tempo_project (63) end},
+							{key = "064", action_function = function() fnc_tempo_project (64) end},
+							{key = "065", action_function = function() fnc_tempo_project (65) end},
+							{key = "066", action_function = function() fnc_tempo_project (66) end},
+							{key = "067", action_function = function() fnc_tempo_project (67) end},
+							{key = "068", action_function = function() fnc_tempo_project (68) end},
+							{key = "069", action_function = function() fnc_tempo_project (69) end},
+							{key = "070", action_function = function() fnc_tempo_project (70) end},
+							{key = "071", action_function = function() fnc_tempo_project (71) end},
+							{key = "072", action_function = function() fnc_tempo_project (72) end},
+							{key = "073", action_function = function() fnc_tempo_project (73) end},
+							{key = "074", action_function = function() fnc_tempo_project (74) end},
+							{key = "075", action_function = function() fnc_tempo_project (75) end},
+							{key = "076", action_function = function() fnc_tempo_project (76) end},
+							{key = "077", action_function = function() fnc_tempo_project (77) end},
+							{key = "078", action_function = function() fnc_tempo_project (78) end},
+							{key = "079", action_function = function() fnc_tempo_project (79) end},
+						},},
+						
+						{key = "080-099", children = { -- default_open = true, 
+							{key = "080", action_function = function() fnc_tempo_project (80) end},
+							{key = "081", action_function = function() fnc_tempo_project (81) end},
+							{key = "082", action_function = function() fnc_tempo_project (82) end},
+							{key = "083", action_function = function() fnc_tempo_project (83) end},
+							{key = "084", action_function = function() fnc_tempo_project (84) end},
+							{key = "085", action_function = function() fnc_tempo_project (85) end},
+							{key = "086", action_function = function() fnc_tempo_project (86) end},
+							{key = "087", action_function = function() fnc_tempo_project (87) end},
+							{key = "088", action_function = function() fnc_tempo_project (88) end},
+							{key = "089", action_function = function() fnc_tempo_project (89) end},
+							{key = "090", action_function = function() fnc_tempo_project (90) end},
+							{key = "091", action_function = function() fnc_tempo_project (91) end},
+							{key = "092", action_function = function() fnc_tempo_project (92) end},
+							{key = "093", action_function = function() fnc_tempo_project (93) end},
+							{key = "094", action_function = function() fnc_tempo_project (94) end},
+							{key = "095", action_function = function() fnc_tempo_project (95) end},
+							{key = "096", action_function = function() fnc_tempo_project (96) end},
+							{key = "097", action_function = function() fnc_tempo_project (97) end},
+							{key = "098", action_function = function() fnc_tempo_project (98) end},
+							{key = "099", action_function = function() fnc_tempo_project (99) end},
+						},},
+						
+						{key = "100-119", children = { -- default_open = true, 
+							{key = "100", action_function = function() fnc_tempo_project (100) end},
+							{key = "101", action_function = function() fnc_tempo_project (101) end},
+							{key = "102", action_function = function() fnc_tempo_project (102) end},
+							{key = "103", action_function = function() fnc_tempo_project (103) end},
+							{key = "104", action_function = function() fnc_tempo_project (104) end},
+							{key = "105", action_function = function() fnc_tempo_project (105) end},
+							{key = "106", action_function = function() fnc_tempo_project (106) end},
+							{key = "107", action_function = function() fnc_tempo_project (107) end},
+							{key = "108", action_function = function() fnc_tempo_project (108) end},
+							{key = "109", action_function = function() fnc_tempo_project (109) end},
+							{key = "110", action_function = function() fnc_tempo_project (110) end},
+							{key = "111", action_function = function() fnc_tempo_project (111) end},
+							{key = "112", action_function = function() fnc_tempo_project (112) end},
+							{key = "113", action_function = function() fnc_tempo_project (113) end},
+							{key = "114", action_function = function() fnc_tempo_project (114) end},
+							{key = "115", action_function = function() fnc_tempo_project (115) end},
+							{key = "116", action_function = function() fnc_tempo_project (116) end},
+							{key = "117", action_function = function() fnc_tempo_project (117) end},
+							{key = "118", action_function = function() fnc_tempo_project (118) end},
+							{key = "119", action_function = function() fnc_tempo_project (119) end},
+						},},
+						
+						{key = "120-139", children = { -- default_open = true, 
+							{key = "120", action_function = function() fnc_tempo_project (120) end},
+							{key = "121", action_function = function() fnc_tempo_project (121) end},
+							{key = "122", action_function = function() fnc_tempo_project (122) end},
+							{key = "123", action_function = function() fnc_tempo_project (123) end},
+							{key = "124", action_function = function() fnc_tempo_project (124) end},
+							{key = "125", action_function = function() fnc_tempo_project (125) end},
+							{key = "126", action_function = function() fnc_tempo_project (126) end},
+							{key = "127", action_function = function() fnc_tempo_project (127) end},
+							{key = "128", action_function = function() fnc_tempo_project (128) end},
+							{key = "129", action_function = function() fnc_tempo_project (129) end},
+							{key = "130", action_function = function() fnc_tempo_project (130) end},
+							{key = "131", action_function = function() fnc_tempo_project (131) end},
+							{key = "132", action_function = function() fnc_tempo_project (132) end},
+							{key = "133", action_function = function() fnc_tempo_project (133) end},
+							{key = "134", action_function = function() fnc_tempo_project (134) end},
+							{key = "135", action_function = function() fnc_tempo_project (135) end},
+							{key = "136", action_function = function() fnc_tempo_project (136) end},
+							{key = "137", action_function = function() fnc_tempo_project (137) end},
+							{key = "138", action_function = function() fnc_tempo_project (138) end},
+							{key = "139", action_function = function() fnc_tempo_project (139) end},
+						},},
+						
+						{key = "140-159", children = { -- default_open = true, 
+							{key = "140", action_function = function() fnc_tempo_project (140) end},
+							{key = "141", action_function = function() fnc_tempo_project (141) end},
+							{key = "142", action_function = function() fnc_tempo_project (142) end},
+							{key = "143", action_function = function() fnc_tempo_project (143) end},
+							{key = "144", action_function = function() fnc_tempo_project (144) end},
+							{key = "145", action_function = function() fnc_tempo_project (145) end},
+							{key = "146", action_function = function() fnc_tempo_project (146) end},
+							{key = "147", action_function = function() fnc_tempo_project (147) end},
+							{key = "148", action_function = function() fnc_tempo_project (148) end},
+							{key = "149", action_function = function() fnc_tempo_project (149) end},
+							{key = "150", action_function = function() fnc_tempo_project (150) end},
+							{key = "151", action_function = function() fnc_tempo_project (151) end},
+							{key = "152", action_function = function() fnc_tempo_project (152) end},
+							{key = "153", action_function = function() fnc_tempo_project (153) end},
+							{key = "154", action_function = function() fnc_tempo_project (154) end},
+							{key = "155", action_function = function() fnc_tempo_project (155) end},
+							{key = "156", action_function = function() fnc_tempo_project (156) end},
+							{key = "157", action_function = function() fnc_tempo_project (157) end},
+							{key = "158", action_function = function() fnc_tempo_project (158) end},
+							{key = "159", action_function = function() fnc_tempo_project (159) end},
+						},},
+						
+						{key = "160-179", children = { -- default_open = true, 
+							{key = "160", action_function = function() fnc_tempo_project (160) end},
+							{key = "161", action_function = function() fnc_tempo_project (161) end},
+							{key = "162", action_function = function() fnc_tempo_project (162) end},
+							{key = "163", action_function = function() fnc_tempo_project (163) end},
+							{key = "164", action_function = function() fnc_tempo_project (164) end},
+							{key = "165", action_function = function() fnc_tempo_project (165) end},
+							{key = "166", action_function = function() fnc_tempo_project (166) end},
+							{key = "167", action_function = function() fnc_tempo_project (167) end},
+							{key = "168", action_function = function() fnc_tempo_project (168) end},
+							{key = "169", action_function = function() fnc_tempo_project (169) end},
+							{key = "170", action_function = function() fnc_tempo_project (170) end},
+							{key = "171", action_function = function() fnc_tempo_project (171) end},
+							{key = "172", action_function = function() fnc_tempo_project (172) end},
+							{key = "173", action_function = function() fnc_tempo_project (173) end},
+							{key = "174", action_function = function() fnc_tempo_project (174) end},
+							{key = "175", action_function = function() fnc_tempo_project (175) end},
+							{key = "176", action_function = function() fnc_tempo_project (176) end},
+							{key = "177", action_function = function() fnc_tempo_project (177) end},
+							{key = "178", action_function = function() fnc_tempo_project (178) end},
+							{key = "179", action_function = function() fnc_tempo_project (179) end},
+						},},
+					},},
+					
+					{key = "180-320", children = { -- default_open = true, 
+						{key = "180-199", children = { -- default_open = true, 
+							{key = "180", action_function = function() fnc_tempo_project (180) end},
+							{key = "181", action_function = function() fnc_tempo_project (181) end},
+							{key = "182", action_function = function() fnc_tempo_project (182) end},
+							{key = "183", action_function = function() fnc_tempo_project (183) end},
+							{key = "184", action_function = function() fnc_tempo_project (184) end},
+							{key = "185", action_function = function() fnc_tempo_project (185) end},
+							{key = "186", action_function = function() fnc_tempo_project (186) end},
+							{key = "187", action_function = function() fnc_tempo_project (187) end},
+							{key = "188", action_function = function() fnc_tempo_project (188) end},
+							{key = "189", action_function = function() fnc_tempo_project (189) end},
+							{key = "190", action_function = function() fnc_tempo_project (190) end},
+							{key = "191", action_function = function() fnc_tempo_project (191) end},
+							{key = "192", action_function = function() fnc_tempo_project (192) end},
+							{key = "193", action_function = function() fnc_tempo_project (193) end},
+							{key = "194", action_function = function() fnc_tempo_project (194) end},
+							{key = "195", action_function = function() fnc_tempo_project (195) end},
+							{key = "196", action_function = function() fnc_tempo_project (196) end},
+							{key = "197", action_function = function() fnc_tempo_project (197) end},
+							{key = "198", action_function = function() fnc_tempo_project (198) end},
+							{key = "199", action_function = function() fnc_tempo_project (199) end},
+						},},
+						
+						{key = "200-219", children = { -- default_open = true, 
+							{key = "200", action_function = function() fnc_tempo_project (200) end},
+							{key = "201", action_function = function() fnc_tempo_project (201) end},
+							{key = "202", action_function = function() fnc_tempo_project (202) end},
+							{key = "203", action_function = function() fnc_tempo_project (203) end},
+							{key = "204", action_function = function() fnc_tempo_project (204) end},
+							{key = "205", action_function = function() fnc_tempo_project (205) end},
+							{key = "206", action_function = function() fnc_tempo_project (206) end},
+							{key = "207", action_function = function() fnc_tempo_project (207) end},
+							{key = "208", action_function = function() fnc_tempo_project (208) end},
+							{key = "209", action_function = function() fnc_tempo_project (209) end},
+							{key = "210", action_function = function() fnc_tempo_project (210) end},
+							{key = "211", action_function = function() fnc_tempo_project (211) end},
+							{key = "212", action_function = function() fnc_tempo_project (212) end},
+							{key = "213", action_function = function() fnc_tempo_project (213) end},
+							{key = "214", action_function = function() fnc_tempo_project (214) end},
+							{key = "215", action_function = function() fnc_tempo_project (215) end},
+							{key = "216", action_function = function() fnc_tempo_project (216) end},
+							{key = "217", action_function = function() fnc_tempo_project (217) end},
+							{key = "218", action_function = function() fnc_tempo_project (218) end},
+							{key = "219", action_function = function() fnc_tempo_project (219) end},
+						},},
+						
+						{key = "220-239", children = { -- default_open = true, 
+							{key = "220", action_function = function() fnc_tempo_project (220) end},
+							{key = "221", action_function = function() fnc_tempo_project (221) end},
+							{key = "222", action_function = function() fnc_tempo_project (222) end},
+							{key = "223", action_function = function() fnc_tempo_project (223) end},
+							{key = "224", action_function = function() fnc_tempo_project (224) end},
+							{key = "225", action_function = function() fnc_tempo_project (225) end},
+							{key = "226", action_function = function() fnc_tempo_project (226) end},
+							{key = "227", action_function = function() fnc_tempo_project (227) end},
+							{key = "228", action_function = function() fnc_tempo_project (228) end},
+							{key = "229", action_function = function() fnc_tempo_project (229) end},
+							{key = "230", action_function = function() fnc_tempo_project (230) end},
+							{key = "231", action_function = function() fnc_tempo_project (231) end},
+							{key = "232", action_function = function() fnc_tempo_project (232) end},
+							{key = "233", action_function = function() fnc_tempo_project (233) end},
+							{key = "234", action_function = function() fnc_tempo_project (234) end},
+							{key = "235", action_function = function() fnc_tempo_project (235) end},
+							{key = "236", action_function = function() fnc_tempo_project (236) end},
+							{key = "237", action_function = function() fnc_tempo_project (237) end},
+							{key = "238", action_function = function() fnc_tempo_project (238) end},
+							{key = "239", action_function = function() fnc_tempo_project (239) end},
+						},},
+						
+						{key = "240-259", children = { -- default_open = true, 
+							{key = "240", action_function = function() fnc_tempo_project (240) end},
+							{key = "241", action_function = function() fnc_tempo_project (241) end},
+							{key = "242", action_function = function() fnc_tempo_project (242) end},
+							{key = "243", action_function = function() fnc_tempo_project (243) end},
+							{key = "244", action_function = function() fnc_tempo_project (244) end},
+							{key = "245", action_function = function() fnc_tempo_project (245) end},
+							{key = "246", action_function = function() fnc_tempo_project (246) end},
+							{key = "247", action_function = function() fnc_tempo_project (247) end},
+							{key = "248", action_function = function() fnc_tempo_project (248) end},
+							{key = "249", action_function = function() fnc_tempo_project (249) end},
+							{key = "250", action_function = function() fnc_tempo_project (250) end},
+							{key = "251", action_function = function() fnc_tempo_project (251) end},
+							{key = "252", action_function = function() fnc_tempo_project (252) end},
+							{key = "253", action_function = function() fnc_tempo_project (253) end},
+							{key = "254", action_function = function() fnc_tempo_project (254) end},
+							{key = "255", action_function = function() fnc_tempo_project (255) end},
+							{key = "256", action_function = function() fnc_tempo_project (256) end},
+							{key = "257", action_function = function() fnc_tempo_project (257) end},
+							{key = "258", action_function = function() fnc_tempo_project (258) end},
+							{key = "259", action_function = function() fnc_tempo_project (259) end},
+						},},
+						
+						{key = "260-279", children = { -- default_open = true, 
+							{key = "260", action_function = function() fnc_tempo_project (260) end},
+							{key = "261", action_function = function() fnc_tempo_project (261) end},
+							{key = "262", action_function = function() fnc_tempo_project (262) end},
+							{key = "263", action_function = function() fnc_tempo_project (263) end},
+							{key = "264", action_function = function() fnc_tempo_project (264) end},
+							{key = "265", action_function = function() fnc_tempo_project (265) end},
+							{key = "266", action_function = function() fnc_tempo_project (266) end},
+							{key = "267", action_function = function() fnc_tempo_project (267) end},
+							{key = "268", action_function = function() fnc_tempo_project (268) end},
+							{key = "269", action_function = function() fnc_tempo_project (269) end},
+							{key = "270", action_function = function() fnc_tempo_project (270) end},
+							{key = "271", action_function = function() fnc_tempo_project (271) end},
+							{key = "272", action_function = function() fnc_tempo_project (272) end},
+							{key = "273", action_function = function() fnc_tempo_project (273) end},
+							{key = "274", action_function = function() fnc_tempo_project (274) end},
+							{key = "275", action_function = function() fnc_tempo_project (275) end},
+							{key = "276", action_function = function() fnc_tempo_project (276) end},
+							{key = "277", action_function = function() fnc_tempo_project (277) end},
+							{key = "278", action_function = function() fnc_tempo_project (278) end},
+							{key = "279", action_function = function() fnc_tempo_project (279) end},
+						},},
+						
+						{key = "280-299", children = { -- default_open = true, 
+							{key = "280", action_function = function() fnc_tempo_project (280) end},
+							{key = "281", action_function = function() fnc_tempo_project (281) end},
+							{key = "282", action_function = function() fnc_tempo_project (282) end},
+							{key = "283", action_function = function() fnc_tempo_project (283) end},
+							{key = "284", action_function = function() fnc_tempo_project (284) end},
+							{key = "285", action_function = function() fnc_tempo_project (285) end},
+							{key = "286", action_function = function() fnc_tempo_project (286) end},
+							{key = "287", action_function = function() fnc_tempo_project (287) end},
+							{key = "288", action_function = function() fnc_tempo_project (288) end},
+							{key = "289", action_function = function() fnc_tempo_project (289) end},
+							{key = "290", action_function = function() fnc_tempo_project (290) end},
+							{key = "291", action_function = function() fnc_tempo_project (291) end},
+							{key = "292", action_function = function() fnc_tempo_project (292) end},
+							{key = "293", action_function = function() fnc_tempo_project (293) end},
+							{key = "294", action_function = function() fnc_tempo_project (294) end},
+							{key = "295", action_function = function() fnc_tempo_project (295) end},
+							{key = "296", action_function = function() fnc_tempo_project (296) end},
+							{key = "297", action_function = function() fnc_tempo_project (297) end},
+							{key = "298", action_function = function() fnc_tempo_project (298) end},
+							{key = "299", action_function = function() fnc_tempo_project (299) end},
+						},},
+						
+						{key = "300-320", children = { -- default_open = true, 
+							{key = "300", action_function = function() fnc_tempo_project (300) end},
+							{key = "301", action_function = function() fnc_tempo_project (301) end},
+							{key = "302", action_function = function() fnc_tempo_project (302) end},
+							{key = "303", action_function = function() fnc_tempo_project (303) end},
+							{key = "304", action_function = function() fnc_tempo_project (304) end},
+							{key = "305", action_function = function() fnc_tempo_project (305) end},
+							{key = "306", action_function = function() fnc_tempo_project (306) end},
+							{key = "307", action_function = function() fnc_tempo_project (307) end},
+							{key = "308", action_function = function() fnc_tempo_project (308) end},
+							{key = "309", action_function = function() fnc_tempo_project (309) end},
+							{key = "310", action_function = function() fnc_tempo_project (310) end},
+							{key = "311", action_function = function() fnc_tempo_project (311) end},
+							{key = "312", action_function = function() fnc_tempo_project (312) end},
+							{key = "313", action_function = function() fnc_tempo_project (313) end},
+							{key = "314", action_function = function() fnc_tempo_project (314) end},
+							{key = "315", action_function = function() fnc_tempo_project (315) end},
+							{key = "316", action_function = function() fnc_tempo_project (316) end},
+							{key = "317", action_function = function() fnc_tempo_project (317) end},
+							{key = "318", action_function = function() fnc_tempo_project (318) end},
+							{key = "319", action_function = function() fnc_tempo_project (319) end},
+							{key = "320", action_function = function() fnc_tempo_project (320) end},
+						},},
+					},},
+				},
+			}
+			
+			TreeNodeLibraryOutput(library_tempo_project) -- передаём корневой элемент
+			-- Transpose
+			reaper.ImGui_Dummy(ctx, 0, 5)  -- Добавление вертикального пространства
+			
+			-- Col 2 ————————————————————————————————————————
+			reaper.ImGui_TableNextColumn(ctx)
+			
+			local changed_numerator_time_signature
+			changed_numerator_time_signature, numerator_time_signature_zbsatpkuyg = reaper.ImGui_InputText(ctx, '##numerator_time_signature_zbsatpkuyg', numerator_time_signature_zbsatpkuyg )
+			if changed_numerator_time_signature then
+				numerator_time_signature_zbsatpkuyg = numerator_time_signature_zbsatpkuyg:gsub('%D', '') -- Удаляет все, кроме цифр
+			end
+			reaper.SetExtState("time_signature_zbsatpkuyg", "numerator_time_signature_zbsatpkuyg", numerator_time_signature_zbsatpkuyg, false)
+			
+			
+			
+			-- library_numerator_time_signature
+			local library_numerator_time_signature = {
+				key = "Numerator", default_open = true, children = {
+					{key = "001-008", default_open = true, children = { -- default_open = true, 
+						{key = "001", action_function = function() fnc_numerator_time_signature (1) end},
+						{key = "002", action_function = function() fnc_numerator_time_signature (2) end},
+						{key = "003", action_function = function() fnc_numerator_time_signature (3) end},
+						{key = "004", action_function = function() fnc_numerator_time_signature (4) end},
+						{key = "005", action_function = function() fnc_numerator_time_signature (5) end},
+						{key = "006", action_function = function() fnc_numerator_time_signature (6) end},
+						{key = "007", action_function = function() fnc_numerator_time_signature (7) end},
+						{key = "008", action_function = function() fnc_numerator_time_signature (8) end},
+					},},
+					{key = "009-020", children = { -- default_open = true, 
+						{key = "009", action_function = function() fnc_numerator_time_signature (9) end},
+						{key = "010", action_function = function() fnc_numerator_time_signature (10) end},
+						{key = "011", action_function = function() fnc_numerator_time_signature (11) end},
+						{key = "012", action_function = function() fnc_numerator_time_signature (12) end},
+						{key = "013", action_function = function() fnc_numerator_time_signature (13) end},
+						{key = "014", action_function = function() fnc_numerator_time_signature (14) end},
+						{key = "015", action_function = function() fnc_numerator_time_signature (15) end},
+						{key = "016", action_function = function() fnc_numerator_time_signature (16) end},
+						{key = "017", action_function = function() fnc_numerator_time_signature (17) end},
+						{key = "018", action_function = function() fnc_numerator_time_signature (18) end},
+						{key = "019", action_function = function() fnc_numerator_time_signature (19) end},
+						{key = "020", action_function = function() fnc_numerator_time_signature (20) end},
+					},},
+					-- {key = "300-320", children = { -- default_open = true, 
+					-- },},
+				},
+			}
+			
+			TreeNodeLibraryOutput(library_numerator_time_signature) -- передаём корневой элемент
+			reaper.ImGui_Dummy(ctx, 0, 5)  -- Добавление вертикального пространства
+			
+			-- Col 3 ————————————————————————————————————————
+			reaper.ImGui_TableNextColumn(ctx)
+			
+			local changed_denominator_time_signature
+			changed_denominator_time_signature, denominator_time_signature_zbsatpkuyg = reaper.ImGui_InputText(ctx, '##denominator_time_signature_zbsatpkuyg', denominator_time_signature_zbsatpkuyg )
+			if changed_denominator_time_signature then
+				denominator_time_signature_zbsatpkuyg = denominator_time_signature_zbsatpkuyg:gsub('%D', '') -- Удаляет все, кроме цифр
+			end
+			reaper.SetExtState("time_signature_zbsatpkuyg", "denominator_time_signature_zbsatpkuyg", denominator_time_signature_zbsatpkuyg, false)
+			
+			-- library_numerator_time_signature
+			local library_denominator_time_signature = {
+				key = "Denominator", default_open = true, children = {
+					{key = "001-008", default_open = true, children = { -- default_open = true, 
+						{key = "001", action_function = function() fnc_denominator_time_signature (1) end},
+						{key = "002", action_function = function() fnc_denominator_time_signature (2) end},
+						{key = "003", action_function = function() fnc_denominator_time_signature (3) end},
+						{key = "004", action_function = function() fnc_denominator_time_signature (4) end},
+						{key = "005", action_function = function() fnc_denominator_time_signature (5) end},
+						{key = "006", action_function = function() fnc_denominator_time_signature (6) end},
+						{key = "007", action_function = function() fnc_denominator_time_signature (7) end},
+						{key = "008", action_function = function() fnc_denominator_time_signature (8) end},
+					},},
+					{key = "009-020", children = { -- default_open = true, 
+						{key = "009", action_function = function() fnc_denominator_time_signature (9) end},
+						{key = "010", action_function = function() fnc_denominator_time_signature (10) end},
+						{key = "011", action_function = function() fnc_denominator_time_signature (11) end},
+						{key = "012", action_function = function() fnc_denominator_time_signature (12) end},
+						{key = "013", action_function = function() fnc_denominator_time_signature (13) end},
+						{key = "014", action_function = function() fnc_denominator_time_signature (14) end},
+						{key = "015", action_function = function() fnc_denominator_time_signature (15) end},
+						{key = "016", action_function = function() fnc_denominator_time_signature (16) end},
+						{key = "017", action_function = function() fnc_denominator_time_signature (17) end},
+						{key = "018", action_function = function() fnc_denominator_time_signature (18) end},
+						{key = "019", action_function = function() fnc_denominator_time_signature (19) end},
+						{key = "020", action_function = function() fnc_denominator_time_signature (20) end},
+					},},
+					-- {key = "300-320", children = { -- default_open = true, 
+					-- },},
+				},
+			}
+			
+			TreeNodeLibraryOutput(library_denominator_time_signature) -- передаём корневой элемент
+			reaper.ImGui_Dummy(ctx, 0, 5)  -- Добавление вертикального пространства
+			
+			reaper.ImGui_EndTable(ctx) -- Завершаем таблицу
+			end
+			
+			
+			-- library_tempo_settings
+			local library_tempo_settings = {
+				key = "Tempo Settings", default_open = true, children = {
+					{key = "Insert Tempo Marker User Inputs", action_function = function() InsertTempoMarkerUserInputs (20) end},
+					{separator_horizontal = "2", separator_color = "#3F3F48" },
+					{spacing_vertical = "3"},
+					{key = "Toggle show master tempo envelope", action_id = "41046"},
+					{key = "View: Toggle master track visible", action_id = "40075"},
+					{separator_horizontal = "2", separator_color = "#3F3F48" },
+					{spacing_vertical = "3"},
+					{key = "Tempo envelope: Set display range", action_id = "40933"},
+					{key = "Tempo envelope: Insert tempo/time signature change marker at edit cursor", action_id = "42330"},
+					{key = "Tempo envelope: Insert tempo marker at edit cursor, without opening tempo edit dialog", action_id = "40256"},
+					{separator_horizontal = "2", separator_color = "#3F3F48" },
+					{spacing_vertical = "3"},
+					{key = "Increase Tempo Markers In Time Selection", action_function = function() ModifyTempoInTimeSelection("plus") end},
+					{key = "Decrease Tempo Markers In Time Selection", action_function = function() ModifyTempoInTimeSelection("minus") end},
+					{separator_horizontal = "2", separator_color = "#3F3F48" },
+					{spacing_vertical = "3"},
+					{key = "Tempo envelope: Increase all tempo markers 01 BPM", action_id = "41215"},
+					{key = "Tempo envelope: Decrease all tempo markers 01 BPM", action_id = "41216"},
+					
+					-- {key = "300-320", children = { -- default_open = true, 
+					-- },},
+				},
+			}
+			
+			TreeNodeLibraryOutput(library_tempo_settings) -- передаём корневой элемент
 			reaper.ImGui_Dummy(ctx, 0, 20)  -- Добавление вертикального пространства
 			
-			cboc2 ( " Toggle show master tempo envelope ", function() reaper.Main_OnCommand("41046", 0) end, 0, 25 )
-			cboc2 ( " View: Toggle master track visible ", function() reaper.Main_OnCommand("40075", 0) end, 0, 25 )
-			reaper.ImGui_Dummy(ctx, 0, 20)  -- Добавление вертикального пространства
 			
-			cboc2 ( " Insert tempo/time signature change marker at edit cursor... ", function() reaper.Main_OnCommand("42330", 0) end, 0, 25 ) -- Tempo envelope: Insert tempo/time signature change marker at edit cursor...
-			cboc2 ( " Insert tempo marker at edit cursor, without opening tempo edit dialog ", function() reaper.Main_OnCommand("40256", 0) end, 0, 25 ) -- Tempo envelope: Insert tempo marker at edit cursor, without opening tempo edit dialog
-			reaper.ImGui_Dummy(ctx, 0, 20)  -- Добавление вертикального пространства
+			if false then -- true false
+				cboc2 ( " Tempo envelope: Set display range... ", function() reaper.Main_OnCommand("40933", 0) end, 0, 25 )
+				reaper.ImGui_Dummy(ctx, 0, 20)  -- Добавление вертикального пространства
+				
+				cboc2 ( " Toggle show master tempo envelope ", function() reaper.Main_OnCommand("41046", 0) end, 0, 25 )
+				cboc2 ( " View: Toggle master track visible ", function() reaper.Main_OnCommand("40075", 0) end, 0, 25 )
+				reaper.ImGui_Dummy(ctx, 0, 20)  -- Добавление вертикального пространства
+				
+				cboc2 ( " Insert tempo/time signature change marker at edit cursor... ", function() reaper.Main_OnCommand("42330", 0) end, 0, 25 ) -- Tempo envelope: Insert tempo/time signature change marker at edit cursor...
+				cboc2 ( " Insert tempo marker at edit cursor, without opening tempo edit dialog ", function() reaper.Main_OnCommand("40256", 0) end, 0, 25 ) -- Tempo envelope: Insert tempo marker at edit cursor, without opening tempo edit dialog
+				reaper.ImGui_Dummy(ctx, 0, 20)  -- Добавление вертикального пространства
+				
+				cboc2 ( " Tempo envelope: Increase all tempo markers 01 BPM ", function() reaper.Main_OnCommand("41215", 0) end, 0, 25 ) -- Tempo envelope: Insert tempo marker at edit cursor, without opening tempo edit dialog
+				cboc2 ( " Tempo envelope: Decrease all tempo markers 01 BPM ", function() reaper.Main_OnCommand("41216", 0) end, 0, 25 ) -- Tempo envelope: Insert tempo marker at edit cursor, without opening tempo edit dialog
+				reaper.ImGui_Dummy(ctx, 0, 20)  -- Добавление вертикального пространства
+				
+				cboc2 ( " Insert Tempo Marker User Inputs ", function() InsertTempoMarkerUserInputs() end, 0, 25 ) -- Tempo envelope: Insert tempo marker at edit cursor, without opening tempo edit dialog
+			end
 			
-			cboc2 ( " Tempo envelope: Increase all tempo markers 01 BPM ", function() reaper.Main_OnCommand("41215", 0) end, 0, 25 ) -- Tempo envelope: Insert tempo marker at edit cursor, without opening tempo edit dialog
-			cboc2 ( " Tempo envelope: Decrease all tempo markers 01 BPM ", function() reaper.Main_OnCommand("41216", 0) end, 0, 25 ) -- Tempo envelope: Insert tempo marker at edit cursor, without opening tempo edit dialog
-			reaper.ImGui_Dummy(ctx, 0, 20)  -- Добавление вертикального пространства
-			
-			cboc2 ( " Insert Tempo Marker User Inputs ", function() InsertTempoMarkerUserInputs() end, 0, 25 ) -- Tempo envelope: Insert tempo marker at edit cursor, without opening tempo edit dialog
 		elseif selected_content == "Stretch_Marker_Content_Show" then
 			reaper.ImGui_SeparatorText( ctx, "Stretch Marker" )
 			
@@ -5394,8 +6238,6 @@ local function main()
 			end, 0, 25)
 			reaper.ImGui_Dummy(ctx, 0, 10)  -- Добавление вертикального пространства
 			
-			local color_item = "#333333"
-			
 			local chord_ulaYkZjtGm = reaper.GetExtState("chord_ulaYkZjtGm", "chord_value_ulaYkZjtGm")
 			if chord_ulaYkZjtGm == "" then
 				chord_ulaYkZjtGm = "C" -- значение по умолчанию
@@ -5445,6 +6287,7 @@ local function main()
 					{key = "1/6", action_function = function() fnc_note_item_length ("1/6") end},
 					{key = "1/7", action_function = function() fnc_note_item_length ("1/7") end},
 					{key = "1/8", action_function = function() fnc_note_item_length ("1/8") end},
+					{key = "1/16", action_function = function() fnc_note_item_length ("1/16") end},
 				},
 			}
 			
@@ -5506,50 +6349,50 @@ local function main()
 					},},
 				
 					{key = "Insert Empty Item Chord", default_open = true, children = {
-						{key = chord_ulaYkZjtGm .. "", action_function = function() InsertEmptyItemWithNameAndColor( chord_ulaYkZjtGm .. "", color_item, note_item_length_value_ulaYkZjtGm) end},
-						{key = chord_ulaYkZjtGm .. "6", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "6", color_item, note_item_length_value_ulaYkZjtGm) end},
-						{key = chord_ulaYkZjtGm .. "maj", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "∆", color_item, note_item_length_value_ulaYkZjtGm) end},
-						{key = chord_ulaYkZjtGm .. "maj (6/9)", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "∆ (6/9)", color_item, note_item_length_value_ulaYkZjtGm) end},
-						{key = chord_ulaYkZjtGm .. "maj (13#11)", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "∆ (13#11)", color_item, note_item_length_value_ulaYkZjtGm) end},
-						{key = chord_ulaYkZjtGm .. "maj (7#5)", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "∆ (7#5)", color_item, note_item_length_value_ulaYkZjtGm) end},
+						{key = chord_ulaYkZjtGm .. "", action_function = function() InsertEmptyItemWithNameAndColor( chord_ulaYkZjtGm .. "", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
+						{key = chord_ulaYkZjtGm .. "6", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "6", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
+						{key = chord_ulaYkZjtGm .. "maj", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "∆", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
+						{key = chord_ulaYkZjtGm .. "maj (6/9)", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "∆ (6/9)", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
+						{key = chord_ulaYkZjtGm .. "maj (13#11)", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "∆ (13#11)", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
+						{key = chord_ulaYkZjtGm .. "maj (7#5)", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "∆ (7#5)", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
 						{spacing_vertical = "0"},
 						{separator_horizontal = "3", separator_color = "#3F3F48", separator_length = 120 },
 						{spacing_vertical = "5"},
 						
-						{key = chord_ulaYkZjtGm .. "7", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "7", color_item, note_item_length_value_ulaYkZjtGm) end},
-						{key = chord_ulaYkZjtGm .. "7(6b9)", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "7(6b9)", color_item, note_item_length_value_ulaYkZjtGm) end},
-						{key = chord_ulaYkZjtGm .. "7(9,11,13)", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "7(9,11,13)", color_item, note_item_length_value_ulaYkZjtGm) end},
-						{key = chord_ulaYkZjtGm .. "7 (13#11)", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "7 (13#11)", color_item, note_item_length_value_ulaYkZjtGm) end},
-						{key = chord_ulaYkZjtGm .. "7 (#9b13)", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "7 (#9b13)", color_item, note_item_length_value_ulaYkZjtGm) end},
-						{key = chord_ulaYkZjtGm .. "7 (b9#9b13)", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "7 (b9#9b13)", color_item, note_item_length_value_ulaYkZjtGm) end},
-						{key = chord_ulaYkZjtGm .. "9", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "9", color_item, note_item_length_value_ulaYkZjtGm) end},
+						{key = chord_ulaYkZjtGm .. "7", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "7", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
+						{key = chord_ulaYkZjtGm .. "7(6b9)", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "7(6b9)", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
+						{key = chord_ulaYkZjtGm .. "7(9,11,13)", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "7(9,11,13)", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
+						{key = chord_ulaYkZjtGm .. "7 (13#11)", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "7 (13#11)", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
+						{key = chord_ulaYkZjtGm .. "7 (#9b13)", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "7 (#9b13)", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
+						{key = chord_ulaYkZjtGm .. "7 (b9#9b13)", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "7 (b9#9b13)", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
+						{key = chord_ulaYkZjtGm .. "9", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "9", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
 						{spacing_vertical = "0"},
 						{separator_horizontal = "3", separator_color = "#3F3F48", separator_length = 120 },
 						{spacing_vertical = "5"},
 						
-						{key = chord_ulaYkZjtGm .. "sus2", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "sus2", color_item, note_item_length_value_ulaYkZjtGm) end},
-						{key = chord_ulaYkZjtGm .. "sus4", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "sus4", color_item, note_item_length_value_ulaYkZjtGm) end},
-						{key = chord_ulaYkZjtGm .. "7sus4", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "7sus4", color_item, note_item_length_value_ulaYkZjtGm) end},
-						{key = chord_ulaYkZjtGm .. "9sus4", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "9sus4", color_item, note_item_length_value_ulaYkZjtGm) end},
-						{key = chord_ulaYkZjtGm .. "13sus4", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "13sus4", color_item, note_item_length_value_ulaYkZjtGm) end},
+						{key = chord_ulaYkZjtGm .. "sus2", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "sus2", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
+						{key = chord_ulaYkZjtGm .. "sus4", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "sus4", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
+						{key = chord_ulaYkZjtGm .. "7sus4", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "7sus4", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
+						{key = chord_ulaYkZjtGm .. "9sus4", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "9sus4", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
+						{key = chord_ulaYkZjtGm .. "13sus4", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "13sus4", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
 						{spacing_vertical = "0"},
 						{separator_horizontal = "3", separator_color = "#3F3F48", separator_length = 120 },
 						{spacing_vertical = "5"},
 						
-						{key = chord_ulaYkZjtGm .. "m", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "m", color_item, note_item_length_value_ulaYkZjtGm) end},
-						{key = chord_ulaYkZjtGm .. "m6", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "m6", color_item, note_item_length_value_ulaYkZjtGm) end},
-						{key = chord_ulaYkZjtGm .. "m (6/9)", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "m (6/9)", color_item, note_item_length_value_ulaYkZjtGm) end},
-						{key = chord_ulaYkZjtGm .. "m7", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "m7", color_item, note_item_length_value_ulaYkZjtGm) end},
-						{key = chord_ulaYkZjtGm .. "m9", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "m9", color_item, note_item_length_value_ulaYkZjtGm) end},
-						{key = chord_ulaYkZjtGm .. "m (maj11)", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "m (maj11)", color_item, note_item_length_value_ulaYkZjtGm) end},
-						{key = chord_ulaYkZjtGm .. "m (9b13)", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "m (9b13)", color_item, note_item_length_value_ulaYkZjtGm) end},
+						{key = chord_ulaYkZjtGm .. "m", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "m", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
+						{key = chord_ulaYkZjtGm .. "m6", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "m6", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
+						{key = chord_ulaYkZjtGm .. "m (6/9)", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "m (6/9)", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
+						{key = chord_ulaYkZjtGm .. "m7", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "m7", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
+						{key = chord_ulaYkZjtGm .. "m9", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "m9", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
+						{key = chord_ulaYkZjtGm .. "m (maj11)", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "m (maj11)", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
+						{key = chord_ulaYkZjtGm .. "m (9b13)", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "m (9b13)", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
 						{spacing_vertical = "0"},
 						{separator_horizontal = "3", separator_color = "#3F3F48", separator_length = 120 },
 						{spacing_vertical = "5"},
 						
-						{key = chord_ulaYkZjtGm .. "ø", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "ø", color_item, note_item_length_value_ulaYkZjtGm) end},
-						{key = chord_ulaYkZjtGm .. "o", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "o", color_item, note_item_length_value_ulaYkZjtGm) end},
-						{key = chord_ulaYkZjtGm .. "+", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "+", color_item, note_item_length_value_ulaYkZjtGm) end},
+						{key = chord_ulaYkZjtGm .. "ø", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "ø", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
+						{key = chord_ulaYkZjtGm .. "o", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "o", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
+						{key = chord_ulaYkZjtGm .. "+", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "+", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
 						{spacing_vertical = "10"},
 					},},
 				},
