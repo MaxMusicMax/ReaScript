@@ -383,6 +383,91 @@ function insert_midi_chord(note_length, chord_str, transpose, velocity, item_nam
 	-- Ограничение значений
 	if not velocity or velocity < 1 then velocity = 1 end
 	if velocity > 127 then velocity = 127 end
+	if not transpose or transpose < -24 then transpose = -24 end
+	if transpose > 24 then transpose = 24 end
+
+	-- Получаем выделенный трек
+	local track = reaper.GetSelectedTrack(0, 0)
+	if not track then return end
+
+	-- Получаем позицию курсора
+	local start_pos = reaper.GetCursorPosition()
+
+	-- Парсим длительность
+	local qn_length
+	if note_length:match("^(%d+)/(%d+)$") then
+		-- Формат "N/M" (например, "1/2", "1/4") — доля такта
+		local numerator, denominator = note_length:match("^(%d+)/(%d+)$")
+		numerator, denominator = tonumber(numerator), tonumber(denominator)
+		if numerator and denominator and denominator > 0 then
+			qn_length = (numerator / denominator) * 4 -- Доля такта * 4 четвертные ноты
+		end
+	elseif note_length:match("^%d+$") then
+		-- Целое число — количество тактов (например, "64", "8")
+		local bars = tonumber(note_length)
+		if bars and bars > 0 then
+			qn_length = bars * 4 -- 1 такт = 4 четвертные ноты
+		end
+	end
+
+	-- Проверяем корректность длины
+	if not qn_length or qn_length <= 0 then return end
+
+	-- Вычисляем длительность в секундах через TimeMap
+	local start_qn = reaper.TimeMap2_timeToQN(0, start_pos)
+	local end_qn = start_qn + qn_length
+	local end_time = reaper.TimeMap2_QNToTime(0, end_qn)
+	local length_sec = end_time - start_pos
+
+	-- Создаём MIDI-айтем
+	local item = reaper.CreateNewMIDIItemInProj(track, start_pos, start_pos + length_sec)
+	if not item then return end
+	reaper.SetMediaItemSelected(item, true)
+
+	-- Получаем MIDI-тейк
+	local take = reaper.GetMediaItemTake(item, 0)
+	if not take then return end
+	
+	-- Устанавливаем имя тейка, если передано
+	if item_name and item_name ~= "1" then
+		reaper.GetSetMediaItemTakeInfo_String(take, "P_NAME", item_name, true)
+	end
+
+	-- Конвертируем длину айтема в PPQ (MIDI-разрешение)
+	local ppq_start = reaper.MIDI_GetPPQPosFromProjTime(take, start_pos)
+	local ppq_end = reaper.MIDI_GetPPQPosFromProjTime(take, start_pos + length_sec)
+	local note_length_ppq = ppq_end - ppq_start
+	
+	-- Таблица для перевода нот в MIDI-номера
+	local notes = { ["C"] = 0, ["C#"] = 1, ["D"] = 2, ["D#"] = 3, ["E"] = 4, 
+		["F"] = 5, ["F#"] = 6, ["G"] = 7, ["G#"] = 8, ["A"] = 9, ["A#"] = 10, ["B"] = 11 }
+
+	-- Разбираем аккорд в MIDI-ноты
+	local chord_notes = {}
+	for note in chord_str:gmatch("[^, ]+") do
+		local name, octave = note:match("([A-G]#?)(%d)")
+		if name and octave then
+			local midi_note = notes[name] + (tonumber(octave) * 12) + transpose + 12
+			if midi_note >= 0 and midi_note <= 127 then
+				table.insert(chord_notes, midi_note)
+			end
+		end
+	end
+
+	-- Вставляем ноты с корректной длиной и громкостью
+	for _, pitch in ipairs(chord_notes) do
+		reaper.MIDI_InsertNote(take, false, false, ppq_start, ppq_start + note_length_ppq, 0, pitch, velocity, false)
+	end
+
+	-- Обновляем MIDI
+	reaper.MIDI_Sort(take)
+	reaper.UpdateArrange()
+end
+
+function insert_midi_chord_v1(note_length, chord_str, transpose, velocity, item_name)
+	-- Ограничение значений
+	if not velocity or velocity < 1 then velocity = 1 end
+	if velocity > 127 then velocity = 127 end
 	
 	-- if not transpose or transpose < -12 then transpose = -12 end
 	-- if transpose > 12 then transpose = 12 end
@@ -480,6 +565,85 @@ end
 -- #######################################
 -- InsertEmptyItemWithNameAndColor
 function InsertEmptyItemWithNameAndColor(name, hex_color, item_length_3)
+	-- Начало блока отмены
+	reaper.Undo_BeginBlock()
+	-- Получаем позицию курсора редактирования
+	local cursor_pos = reaper.GetCursorPosition()
+	-- Получаем первый выделенный трек
+	local track = reaper.GetSelectedTrack(0, 0)
+	if track then
+		-- Создаём новый медиа-айтем
+		local item = reaper.AddMediaItemToTrack(track)
+		if item then
+			-- Устанавливаем позицию айтема на курсор
+			reaper.SetMediaItemInfo_Value(item, "D_POSITION", cursor_pos)
+			
+			local length
+			if item_length_3 then
+				-- Парсим длительность
+				local qn_length
+				if item_length_3:match("^(%d+)/(%d+)$") then
+					-- Формат "N/M" (например, "1/2", "1/4") — доля такта
+					local numerator, denominator = item_length_3:match("^(%d+)/(%d+)$")
+					numerator, denominator = tonumber(numerator), tonumber(denominator)
+					if numerator and denominator and denominator > 0 then
+						qn_length = (numerator / denominator) * 4 -- Доля такта * 4 четвертные ноты
+					end
+				elseif item_length_3:match("^%d+$") then
+					-- Целое число — количество тактов (например, "64", "8")
+					local bars = tonumber(item_length_3)
+					if bars and bars > 0 then
+						qn_length = bars * 4 -- 1 такт = 4 четвертные ноты
+					end
+				end
+				
+				if qn_length and qn_length > 0 then
+					-- Вычисляем длительность в секундах через TimeMap
+					local start_qn = reaper.TimeMap2_timeToQN(0, cursor_pos)
+					local end_qn = start_qn + qn_length
+					local end_time = reaper.TimeMap2_QNToTime(0, end_qn)
+					length = end_time - cursor_pos
+				else
+					-- Некорректный формат, возвращаем
+					return
+				end
+			else
+				-- Длина по умолчанию — один такт
+				local beat_length = reaper.TimeMap2_QNToTime(0, 4) - reaper.TimeMap2_QNToTime(0, 0)
+				length = beat_length
+			end
+			
+			-- Устанавливаем длину айтема
+			reaper.SetMediaItemInfo_Value(item, "D_LENGTH", length)
+			
+			-- Добавляем имя (текстовую заметку)
+			reaper.ULT_SetMediaItemNote(item, name)
+			
+			-- Преобразуем HEX-цвет в десятичный формат
+			if hex_color then
+				local r = tonumber(string.sub(hex_color, 2, 3), 16)
+				local g = tonumber(string.sub(hex_color, 4, 5), 16)
+				local b = tonumber(string.sub(hex_color, 6, 7), 16)
+				local color = reaper.ColorToNative(r, g, b) | 0x1000000
+				-- Устанавливаем цвет айтема
+				reaper.SetMediaItemInfo_Value(item, "I_CUSTOMCOLOR", color)
+			end
+			
+			-- Выделяем новый айтем
+			reaper.SetMediaItemSelected(item, true)
+			-- Перемещаем курсор к концу айтема
+			reaper.Main_OnCommand(reaper.NamedCommandLookup("41174"), 0) -- Item navigation: Move cursor to end of items
+			-- Снимаем выделение со всех айтемов
+			reaper.Main_OnCommand(reaper.NamedCommandLookup("40289"), 0) -- Item: Unselect (clear selection of) all items
+			
+			-- Обновляем проект
+			reaper.UpdateArrange()
+		end
+	end
+	reaper.Undo_EndBlock("Insert Empty Item with Name and Color", -1)
+end
+
+function InsertEmptyItemWithNameAndColor_v1(name, hex_color, item_length_3)
 	-- Начало блока отмены
 	reaper.Undo_BeginBlock()
 	-- Получаем позицию курсора редактирования
