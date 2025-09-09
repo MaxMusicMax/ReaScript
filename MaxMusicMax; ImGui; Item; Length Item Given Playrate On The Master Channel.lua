@@ -1,4 +1,4 @@
---@description Set height selected tracks
+--@description ImGui; Item; Length Item Given Playrate On The Master Channel
 --@version 1.0
 --@author MaxMusicMax
 -- https://forum.cockos.com/showthread.php?p=2059855
@@ -616,7 +616,7 @@ local function main()
 		if reaper.ImGui_BeginTabBar(ctx, "Item Length & Insert Marker") then
 		
 			-- Вкладка — Item Length
-			if reaper.ImGui_BeginTabItem(ctx, "Item Length") then
+			if reaper.ImGui_BeginTabItem(ctx, "Length") then
 			reaper.ImGui_SeparatorText( ctx, "Item Length" )
 			
 			local selected_input_width = 200
@@ -683,9 +683,22 @@ local function main()
 			-- Marker Start End
 			
 			
-			-- Get Mouse Time Relative To Time Selection
+			-- Mouse Position Project
 			reaper.ImGui_Dummy(ctx, 0, 10)  -- Добавление вертикального пространства
-			reaper.ImGui_SeparatorText( ctx, "Get Mouse Time Relative To Time Selection" )
+			reaper.ImGui_SeparatorText( ctx, "Mouse Position Project" )
+			local cursorMouse_time_StartZero = GetMouseTimeStartZero()
+			reaper.ImGui_SetNextItemWidth(ctx, selected_input_width)
+			reaper.ImGui_InputText(ctx, "Start Zero", cursorMouse_time_StartZero, reaper.ImGui_InputTextFlags_ReadOnly())
+			-- Вторая строка: время через reaper.format_timestr_pos()
+			local cursorMouse_time_StartMinus = GetMouseTimeStartMinus()
+			reaper.ImGui_SetNextItemWidth(ctx, selected_input_width)
+			reaper.ImGui_InputText(ctx, "Start Minus", cursorMouse_time_StartMinus, reaper.ImGui_InputTextFlags_ReadOnly())
+			-- Mouse Position Project
+			
+			
+			-- Mouse Relative Time Selection
+			reaper.ImGui_Dummy(ctx, 0, 10)  -- Добавление вертикального пространства
+			reaper.ImGui_SeparatorText( ctx, "Mouse Relative Time Selection" )
 			local start_time, end_time = reaper.GetSet_LoopTimeRange(false, false, 0, 0, false)
 			-- Получение позиции курсора мыши
 			local context = reaper.BR_GetMouseCursorContext()
@@ -702,13 +715,26 @@ local function main()
 				end
 			end
 			reaper.ImGui_SetNextItemWidth(ctx, selected_input_width)
-			reaper.ImGui_InputText(ctx, "Mouse Position", cursor_time, reaper.ImGui_InputTextFlags_ReadOnly())
-			-- Get Mouse Time Relative To Time Selection
+			reaper.ImGui_InputText(ctx, "##Mouse Relative Time Selection", cursor_time, reaper.ImGui_InputTextFlags_ReadOnly())
+			-- Mouse Relative Time Selection
 			
 			
-			-- Edit Cursor Relative To Time Selection
+			-- Edit Cursor Position Project
 			reaper.ImGui_Dummy(ctx, 0, 10)  -- Добавление вертикального пространства
-			reaper.ImGui_SeparatorText( ctx, "Edit Cursor Relative To Time Selection" )
+			reaper.ImGui_SeparatorText( ctx, "Edit Cursor Position Project" )
+			-- Получаем позицию курсора и выводим в поле
+			local cursor_time_StartZero = GetEditCursorPositionTimeStartZero()
+			local cursor_time_StartMinus = GetEditCursorPositionTimeStartMinus()
+			reaper.ImGui_SetNextItemWidth(ctx, selected_input_width)
+			reaper.ImGui_InputText(ctx, "Start Zero ", cursor_time_StartZero, reaper.ImGui_InputTextFlags_ReadOnly())
+			reaper.ImGui_SetNextItemWidth(ctx, selected_input_width)
+			reaper.ImGui_InputText(ctx, "Start Minus ", cursor_time_StartMinus, reaper.ImGui_InputTextFlags_ReadOnly())
+			-- Edit Cursor Position Project
+			
+			
+			-- Edit Cursor Relative Time Selection
+			reaper.ImGui_Dummy(ctx, 0, 10)  -- Добавление вертикального пространства
+			reaper.ImGui_SeparatorText( ctx, "Edit Cursor Relative Time Selection" )
 			-- Получение начала и конца Time Selection
 			local start_time, end_time = reaper.GetSet_LoopTimeRange(false, false, 0, 0, false)
 			-- Получение позиции Edit Cursor
@@ -723,34 +749,8 @@ local function main()
 			end
 			-- Отображение времени в ReadOnly поле
 			reaper.ImGui_SetNextItemWidth(ctx, selected_input_width)
-			reaper.ImGui_InputText(ctx, "Edit Cursor Position", cursor_time, reaper.ImGui_InputTextFlags_ReadOnly())
-			-- Edit Cursor Relative To Time Selection
-			
-			
-			-- Get Mouse Time
-			reaper.ImGui_Dummy(ctx, 0, 10)  -- Добавление вертикального пространства
-			reaper.ImGui_SeparatorText( ctx, "Get Mouse Time" )
-			local cursorMouse_time_StartZero = GetMouseTimeStartZero()
-			reaper.ImGui_SetNextItemWidth(ctx, selected_input_width)
-			reaper.ImGui_InputText(ctx, "Start Zero", cursorMouse_time_StartZero, reaper.ImGui_InputTextFlags_ReadOnly())
-			-- Вторая строка: время через reaper.format_timestr_pos()
-			local cursorMouse_time_StartMinus = GetMouseTimeStartMinus()
-			reaper.ImGui_SetNextItemWidth(ctx, selected_input_width)
-			reaper.ImGui_InputText(ctx, "Start Minus", cursorMouse_time_StartMinus, reaper.ImGui_InputTextFlags_ReadOnly())
-			-- Get Mouse Time
-			
-			
-			-- Edit Cursor Position
-			reaper.ImGui_Dummy(ctx, 0, 10)  -- Добавление вертикального пространства
-			reaper.ImGui_SeparatorText( ctx, "Edit Cursor Position" )
-			-- Получаем позицию курсора и выводим в поле
-			local cursor_time_StartZero = GetEditCursorPositionTimeStartZero()
-			local cursor_time_StartMinus = GetEditCursorPositionTimeStartMinus()
-			reaper.ImGui_SetNextItemWidth(ctx, selected_input_width)
-			reaper.ImGui_InputText(ctx, "Start Zero ", cursor_time_StartZero, reaper.ImGui_InputTextFlags_ReadOnly())
-			reaper.ImGui_SetNextItemWidth(ctx, selected_input_width)
-			reaper.ImGui_InputText(ctx, "Start Minus ", cursor_time_StartMinus, reaper.ImGui_InputTextFlags_ReadOnly())
-			-- Edit Cursor Position
+			reaper.ImGui_InputText(ctx, "##Edit Cursor Relative Time Selection", cursor_time, reaper.ImGui_InputTextFlags_ReadOnly())
+			-- Edit Cursor Relative Time Selection
 			
 			
 			reaper.ImGui_Dummy(ctx, 0, 10)  -- Добавление вертикального пространства
@@ -760,15 +760,15 @@ local function main()
 			end
 			
 			-- Вкладка — Insert Marker
-			if reaper.ImGui_BeginTabItem(ctx, "Insert Marker") then
+			if reaper.ImGui_BeginTabItem(ctx, "Marker") then
 			reaper.ImGui_SeparatorText( ctx, "Insert Marker" )
 			
 			-- cboc2 ( " Set Take Marker At Edit Cursor ", function() SetTakeMarkerAtEditCursor("#40FF00", "✖") end, 0, 30 ) -- █ ● ▰ ✖
 			-- cboc2 ( " Delete Markers Select Item Or Time Selection ", function() DeleteTakeMarkersSelectItemOrTimeSelection() end, 0, 30 )
 			
-			-- insert_empty_item_chord_library
-			local insert_empty_item_chord_library = {
-				key = "Insert Empty Item Chord", default_open = true, children = {
+			-- insert_empty_item_library
+			local insert_empty_item_library = {
+				key = "Insert", default_open = true, children = {
 				
 					{key = "Set Item Marker At Edit Cursor", default_open = true, children = {
 						{key = "Empty", action_function = function() SetTakeMarkerAtEditCursor ( "#40FF00", "" ) end}, -- █ ● ▰ ✖ ×
@@ -791,7 +791,7 @@ local function main()
 				},
 			}
 			
-			TreeNodeLibraryOutput(insert_empty_item_chord_library) -- передаём корневой элемент
+			TreeNodeLibraryOutput(insert_empty_item_library)
 			
 			reaper.ImGui_EndTabItem(ctx)
 			end

@@ -12,9 +12,11 @@ local color_item_empty = "#000000"
 -- =======================
 -- 11111111111111111111111111111111111
 -- menu_structure___
+-- Insert Empty Item Chord
+-- insert_item_chord_library
+
 -- library_name_track_item
 -- insert_empty_item_chord_library
--- insert_item_chord_library
 -- library_grid_main
 -- library_spectrogram_main
 -- library_timebase_main
@@ -43,6 +45,7 @@ local color_item_empty = "#000000"
 -- fnc_denominator_time_signature
 -- fnc_transpose_value
 -- fnc_note_item_length
+-- TransposeSelectedItemsByInterval
 -- MoveMutedItemsToNewTrack
 -- DeleteTakeMarkersSelectItemOrTimeSelection
 -- TreeNodeLibraryOutput
@@ -52,6 +55,8 @@ local color_item_empty = "#000000"
 -- GetEditCursorPositionTimeStartZero
 -- GetEditCursorPositionTimeStartMinus
 -- SetTakeMarkerAtEditCursor
+-- InsertMIDIMarkerTextEventToSelectedItemAtEditCursor
+-- DeleteMarkersInSelectedItemsInTimeSelection
 -- SetSelectedTrackItemName
 -- SelectItemsRelativeCursor
 -- changeItemRate___
@@ -788,6 +793,29 @@ function fnc_note_item_length (note_item_length)
 end
 -- ##################################################
 -- ##################################################
+-- TransposeSelectedItemsByInterval
+function TransposeSelectedItemsByInterval(semitones)
+	reaper.Undo_BeginBlock()
+
+	local item_count = reaper.CountSelectedMediaItems(0)
+	for i = 0, item_count - 1 do
+		local item = reaper.GetSelectedMediaItem(0, i)
+		local take = reaper.GetActiveTake(item)
+		if take and reaper.TakeIsMIDI(take) then
+			local _, note_count, _, _ = reaper.MIDI_CountEvts(take)
+			for j = 0, note_count - 1 do
+				local _, sel, _, startppq, endppq, chan, pitch, vel = reaper.MIDI_GetNote(take, j)
+				local new_pitch = math.max(0, math.min(127, pitch + semitones))
+				reaper.MIDI_SetNote(take, j, sel, nil, startppq, endppq, chan, new_pitch, vel, false)
+			end
+			reaper.MIDI_Sort(take)
+		end
+	end
+
+	reaper.Undo_EndBlock("Transpose notes by " .. semitones .. " semitones", -1)
+end
+-- ##################################################
+-- ##################################################
 -- MoveMutedItemsToNewTrack
 function MoveMutedItemsToNewTrack()
 	-- Получаем активный проект
@@ -1143,6 +1171,118 @@ function SetTakeMarkerAtEditCursor(color, name_marker)
 	end
 
 	reaper.Main_OnCommand(reaper.NamedCommandLookup(40289), 0) -- Item: Unselect (clear selection of) all items
+end
+-- ##################################################
+-- ##################################################
+-- InsertMIDIMarkerTextEventToSelectedItemAtEditCursor
+function InsertMIDIMarkerTextEventToSelectedItemAtEditCursor(text)
+	local edit_cursor_pos = reaper.GetCursorPosition()
+
+	local item_count = reaper.CountSelectedMediaItems(0)
+	if item_count == 0 then
+		reaper.ShowMessageBox("Нет выделенных айтемов", "Ошибка", 0)
+		return
+	end
+
+	for i = 0, item_count - 1 do
+		local item = reaper.GetSelectedMediaItem(0, i)
+		local take = reaper.GetActiveTake(item)
+
+		if take and reaper.TakeIsMIDI(take) then
+			local item_start = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
+			local item_end = item_start + reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
+
+			if edit_cursor_pos >= item_start and edit_cursor_pos <= item_end then
+				local ppq = reaper.MIDI_GetPPQPosFromProjTime(take, edit_cursor_pos)
+
+				-- Явно указываем тип 3 (Marker) и текст
+				local success = reaper.MIDI_InsertTextSysexEvt(
+					take,
+					false,  -- selected
+					false,  -- muted
+					ppq,    -- позиция
+					6,      -- тип = Marker
+					tostring(text or "Marker") -- убедимся, что это строка
+					
+					--[[
+						Text event
+						Copyright notice
+						Track name
+						Instrument name
+						Lyrics
+						Marker
+						Cue
+						Program name
+						Device name
+					]]--
+					
+				)
+
+				if success then
+					reaper.MIDI_Sort(take)
+				else
+					-- reaper.ShowMessageBox("Ошибка при вставке Marker", "Ошибка", 0)
+				end
+
+				return
+			end
+		end
+	end
+
+	-- reaper.ShowMessageBox("Нет подходящего MIDI-айтема под курсором", "Ошибка", 0)
+end
+-- ##################################################
+-- ##################################################
+-- DeleteMarkersInSelectedItemsInTimeSelection
+function DeleteMarkersInSelectedItemsInTimeSelection()
+	local time_sel_start, time_sel_end = reaper.GetSet_LoopTimeRange(false, false, 0, 0, false)
+	if time_sel_start == time_sel_end then
+		reaper.ShowMessageBox("Зона Time Selection не установлена", "Ошибка", 0)
+		return
+	end
+
+	local item_count = reaper.CountSelectedMediaItems(0)
+	if item_count == 0 then
+		reaper.ShowMessageBox("Нет выделенных айтемов", "Ошибка", 0)
+		return
+	end
+
+	for i = 0, item_count - 1 do
+		local item = reaper.GetSelectedMediaItem(0, i)
+		local take = reaper.GetActiveTake(item)
+
+		if take and reaper.TakeIsMIDI(take) then
+			-- Получаем границы айтема
+			local item_start = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
+			local item_end = item_start + reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
+
+			-- Получаем границы пересечения айтема и Time Selection
+			local sel_start = math.max(time_sel_start, item_start)
+			local sel_end = math.min(time_sel_end, item_end)
+
+			if sel_start < sel_end then
+				-- Перебираем все текстовые события
+				local idx = 0
+				while true do
+					local ret, selected, muted, ppqpos, evt_type, msg = reaper.MIDI_GetTextSysexEvt(take, idx)
+					if not ret then break end
+
+					-- Конвертируем ppq в позицию в секундах
+					local event_pos = reaper.MIDI_GetProjTimeFromPPQPos(take, ppqpos)
+
+					-- Если событие Marker (type=6) и внутри выделенной зоны
+					if evt_type == 6 and event_pos >= sel_start and event_pos <= sel_end then
+						reaper.MIDI_DeleteTextSysexEvt(take, idx)
+						-- не увеличиваем idx, т.к. событие удалено и список сместился
+					else
+						idx = idx + 1
+					end
+				end
+
+				reaper.MIDI_Sort(take)
+			end
+		end
+	end
 end
 -- ##################################################
 -- ##################################################
@@ -2388,7 +2528,213 @@ end
 -- ##################################################
 -- ##################################################
 -- delete_or_keep_cc
-function delete_or_keep_cc(cc_to_keep)
+function delete_or_keep_cc(keep_arg)
+	reaper.Undo_BeginBlock()
+
+	-- Специальный случай: если передано true — удалить всё
+	if keep_arg == true then
+		keep_arg = "__DELETE_ALL__"
+	end
+
+	local keep = {}
+
+	-- Обработка строки, если аргумент — строка
+	if type(keep_arg) == "string" then
+		for entry in keep_arg:gmatch("[^,%s]+") do
+			entry = entry:upper()
+			if entry == "PC" or entry == "PB" or entry == "AT" or entry == "PP" or entry == "TEXT" then
+				keep[entry] = true
+			else
+				local num = tonumber(entry)
+				if num and num >= 0 and num <= 127 then
+					keep[num] = true
+				end
+			end
+		end
+	end
+
+	local num_items = reaper.CountSelectedMediaItems(0)
+	if num_items == 0 then
+		reaper.ShowMessageBox("Нет выделенных MIDI элементов.", "Ошибка", 0)
+		reaper.Undo_EndBlock("delete_or_keep_cc (нет элементов)", -1)
+		return
+	end
+
+	for i = 0, num_items - 1 do
+		local item = reaper.GetSelectedMediaItem(0, i)
+		local take = reaper.GetActiveTake(item)
+		if reaper.TakeIsMIDI(take) then
+			reaper.MIDI_DisableSort(take)
+
+			local _, _, ccevtcnt, _ = reaper.MIDI_CountEvts(take)
+			for j = ccevtcnt - 1, 0, -1 do
+				local _, _, _, _, chanmsg, _, msg2, _ = reaper.MIDI_GetCC(take, j)
+				local status = chanmsg & 0xF0
+				local keep_this = false
+
+				if keep_arg == "__DELETE_ALL__" then
+					keep_this = false
+				elseif status == 0xB0 then
+					keep_this = keep[msg2]
+				elseif status == 0xC0 then
+					keep_this = keep["PC"]
+				elseif status == 0xD0 then
+					keep_this = keep["AT"]
+				elseif status == 0xE0 then
+					keep_this = keep["PB"]
+				elseif status == 0xA0 then
+					keep_this = keep["PP"]
+				end
+
+				if not keep_this then
+					reaper.MIDI_DeleteCC(take, j)
+				end
+			end
+
+			local _, _, _, textsyxevtcnt = reaper.MIDI_CountEvts(take)
+			for j = textsyxevtcnt - 1, 0, -1 do
+				local _, _, _, _, msg = reaper.MIDI_GetTextSysexEvt(take, j, false)
+				if type(msg) == "string" then
+					if keep_arg == "__DELETE_ALL__" then
+						reaper.MIDI_DeleteTextSysexEvt(take, j)
+					else
+						local status = msg:byte(1)
+						local is_text = (status >= 0x01 and status <= 0x0F) or (status >= 0xA0 and status <= 0xFE)
+						if is_text and not keep["TEXT"] then
+							reaper.MIDI_DeleteTextSysexEvt(take, j)
+						end
+					end
+				end
+			end
+
+			reaper.MIDI_Sort(take)
+		end
+	end
+
+	if keep_arg == "__DELETE_ALL__" then
+		reaper.ShowMessageBox("Все MIDI CC, Program Change, текстовые и другие поддерживаемые события удалены.", "Удаление завершено", 0)
+	else
+		reaper.ShowMessageBox("Удалены все события, кроме: " .. tostring(keep_arg), "Удаление завершено", 0)
+	end
+
+	reaper.Undo_EndBlock("delete_or_keep_cc", -1)
+end
+
+
+
+
+
+
+function delete_or_keep_cc_v3(keep_str)
+	reaper.Undo_BeginBlock()
+
+	-- Разбор строки "64,11,PC" в множество
+	local keep = {}
+	for entry in keep_str:gmatch("[^,%s]+") do
+		entry = entry:upper()
+		if entry == "PC" or entry == "PB" or entry == "AT" or entry == "PP" then
+			keep[entry] = true
+		else
+			local num = tonumber(entry)
+			if num then keep[num] = true end
+		end
+	end
+
+	local num_items = reaper.CountSelectedMediaItems(0)
+	if num_items > 0 then
+		for i = 0, num_items - 1 do
+			local item = reaper.GetSelectedMediaItem(0, i)
+			local take = reaper.GetActiveTake(item)
+			if reaper.TakeIsMIDI(take) then
+				reaper.MIDI_DisableSort(take)
+
+				local _, _, ccevtcnt, _ = reaper.MIDI_CountEvts(take)
+				for j = ccevtcnt - 1, 0, -1 do
+					local _, _, _, _, chanmsg, _, msg2, _ = reaper.MIDI_GetCC(take, j)
+					local status = chanmsg & 0xF0 -- убираем номер канала
+
+					local keep_this = false
+					if status == 0xB0 then -- CC
+						keep_this = keep[msg2] == true
+					elseif status == 0xC0 then -- Program Change
+						keep_this = keep["PC"] == true
+					elseif status == 0xD0 then -- Channel Aftertouch
+						keep_this = keep["AT"] == true
+					elseif status == 0xE0 then -- Pitch Bend
+						keep_this = keep["PB"] == true
+					elseif status == 0xA0 then -- Polyphonic Aftertouch
+						keep_this = keep["PP"] == true
+					end
+
+					if not keep_this then
+						reaper.MIDI_DeleteCC(take, j)
+					end
+				end
+
+				reaper.MIDI_Sort(take)
+			end
+		end
+
+		reaper.ShowMessageBox("Удалены все события, кроме: " .. keep_str, "Удаление завершено", 0)
+	else
+		reaper.ShowMessageBox("Нет выделенных MIDI элементов.", "Ошибка", 0)
+	end
+
+	reaper.Undo_EndBlock("delete_or_keep_cc", -1)
+end
+
+
+
+function delete_or_keep_cc_v2(cc_to_keep_str)
+	reaper.Undo_BeginBlock()
+
+	-- Преобразовать строку "64,11,10" в множество CC
+	local keep = {}
+	if type(cc_to_keep_str) == "string" then
+		for cc in cc_to_keep_str:gmatch("%d+") do
+			keep[tonumber(cc)] = true
+		end
+	elseif cc_to_keep_str == true then
+		keep = true -- спец-режим: удалить всё
+	else
+		keep[tonumber(cc_to_keep_str)] = true
+	end
+
+	local num_items = reaper.CountSelectedMediaItems(0)
+	if num_items > 0 then
+		for i = 0, num_items - 1 do
+			local item = reaper.GetSelectedMediaItem(0, i)
+			local take = reaper.GetActiveTake(item)
+			if reaper.TakeIsMIDI(take) then
+				reaper.MIDI_DisableSort(take)
+
+				local _, _, ccevtcnt, _ = reaper.MIDI_CountEvts(take)
+				for j = ccevtcnt - 1, 0, -1 do
+					local _, _, _, _, _, _, msg2, _ = reaper.MIDI_GetCC(take, j)
+					if keep == true or not keep[msg2] then
+						reaper.MIDI_DeleteCC(take, j)
+					end
+				end
+
+				reaper.MIDI_Sort(take)
+			end
+		end
+
+		if keep == true then
+			reaper.ShowMessageBox("Все MIDI CC сообщения удалены на выделенных элементах.", "Удаление завершено", 0)
+		else
+			reaper.ShowMessageBox("Удалены все CC, кроме: " .. cc_to_keep_str, "Удаление завершено", 0)
+		end
+	else
+		reaper.ShowMessageBox("Нет выделенных MIDI элементов.", "Ошибка", 0)
+	end
+
+	reaper.Undo_EndBlock("delete_or_keep_cc", -1)
+end
+
+
+-- delete_or_keep_cc_v1
+function delete_or_keep_cc_v1(cc_to_keep)
 	reaper.Undo_BeginBlock()
     -- Получить количество выделенных MIDI элементов
     local num_items = reaper.CountSelectedMediaItems(0)
@@ -2421,7 +2767,8 @@ function delete_or_keep_cc(cc_to_keep)
         reaper.ShowMessageBox("Нет выделенных MIDI элементов.", "Ошибка", 0)
     end
 	reaper.Undo_EndBlock("delete_or_keep_cc", -1)
-end
+end -- delete_or_keep_cc_v1
+
 -- Selected Media Items Remove All CC's From MIDI
 -- delete_or_keep_cc(true)  -- Удалить все CC сообщения
 -- delete_or_keep_cc(64) -- Удалить все CC сообщения, кроме номера 64
@@ -2486,6 +2833,58 @@ end
 -- ##################################################
 -- DeleteProgramChangeAtCursor
 function DeleteProgramChangeAtCursor(ms_range)
+	reaper.Undo_BeginBlock()	-- начинаем блок для возможности отката действия (Undo)
+
+	local item = reaper.GetSelectedMediaItem(0, 0)	-- получаем первый выделенный элемент на треке
+	if not item then return end	-- если элемент не найден, прекращаем выполнение
+
+	local take = reaper.GetTake(item, 0)	-- получаем первый тейк из элемента
+	if not take or not reaper.TakeIsMIDI(take) then return end	-- если тейк отсутствует или не является MIDI — выходим
+
+	local ts_start, ts_end = reaper.GetSet_LoopTimeRange(false, false, 0, 0, false)	-- получаем границы текущего временного выделения
+	local use_time_selection = (ts_end - ts_start) > 0	-- проверяем, активно ли временное выделение
+
+	local range_start, range_end	-- переменные для хранения границ удаления
+
+	if use_time_selection then
+		range_start = ts_start	-- если есть активное выделение — используем его начало
+		range_end = ts_end		-- и его конец
+	else
+		local cursor_pos = reaper.GetCursorPosition()	-- если выделения нет — получаем позицию курсора
+		local offset = (ms_range or 100) / 1000			-- преобразуем диапазон из миллисекунд в секунды (по умолчанию 100 мс)
+		range_start = cursor_pos - offset				-- устанавливаем начало диапазона удаления вокруг курсора
+		range_end = cursor_pos + offset					-- и его конец
+		reaper.GetSet_LoopTimeRange(true, false, range_start, range_end, false)	-- временно устанавливаем выделение на этот диапазон
+	end
+
+	reaper.MIDI_DisableSort(take)	-- отключаем автоматическую сортировку событий, чтобы можно было безопасно удалять
+
+	local _, _, cc_cnt, _ = reaper.MIDI_CountEvts(take)	-- получаем количество MIDI CC-событий (включая Program Change)
+
+	for i = cc_cnt - 1, 0, -1 do	-- проходим по всем CC-событиям в обратном порядке (с конца к началу)
+		local _, _, _, ppqpos, chanmsg = reaper.MIDI_GetCC(take, i)	-- получаем позицию и тип события
+		if chanmsg == 0xC0 then	-- 0xC0 — это статус-байт события Program Change
+			local qn = reaper.MIDI_GetProjQNFromPPQPos(take, ppqpos)	-- переводим позицию события из PPQ в QN (четвертные ноты)
+			local evt_time = reaper.TimeMap_QNToTime(qn)				-- затем в абсолютное время в секундах
+			if evt_time >= range_start and evt_time <= range_end then	-- если время события попадает в нужный диапазон
+				reaper.MIDI_DeleteCC(take, i)	-- удаляем это Program Change событие
+			end
+		end
+	end
+
+	if not use_time_selection then
+		reaper.Main_OnCommand(40635, 0)	-- если мы не сами ставили временное выделение — удаляем его
+	end
+
+	reaper.MIDI_Sort(take)		-- включаем сортировку MIDI-событий обратно (важно после удаления)
+	reaper.UpdateArrange()		-- обновляем отображение аранжировки в окне REAPER
+
+	reaper.Undo_EndBlock("Delete Program Change in Time Selection or near cursor", -1)	-- завершаем блок Undo с описанием действия
+end
+
+
+-- DeleteProgramChangeAtCursor_v1
+function DeleteProgramChangeAtCursor_v1(ms_range)
 	reaper.Undo_BeginBlock()
 
 	local item = reaper.GetSelectedMediaItem(0, 0)
@@ -4081,7 +4480,8 @@ local function main()
 				selected_content = "Insert_Empty_Item_Chord_Content_Show"
 				reaper.SetExtState("MaxMusicMax_ImGuiAlphaWindow", "ImGuiCurrentMenuItem", selected_content, true) 
 			end, 0, 25)
-			reaper.ImGui_Dummy(ctx, 0, 10)  -- Добавление вертикального пространства
+			
+			reaper.ImGui_Dummy(ctx, 0, 5)  -- Добавление вертикального пространства
 			
 			reaper.ImGui_InputText(ctx, '##nameNote',  get_playing_midi(true) or "" )
 			
@@ -4104,9 +4504,11 @@ local function main()
 			-- Слайдер Velocity от 1 до 127 с сохранением во временное хранилище
 			reaper.ImGui_Dummy(ctx, 0, 2)  -- Добавление вертикального пространства
 			
+			
+			
 			if reaper.ImGui_BeginTable(ctx, "Table", 3) then -- Создаём таблицу с 3 колонками
 				-- Первая колонка с фиксированной шириной 50px
-				reaper.ImGui_TableSetupColumn(ctx, "Col 1", reaper.ImGui_TableColumnFlags_WidthFixed(), 150)
+				reaper.ImGui_TableSetupColumn(ctx, "Col 1", reaper.ImGui_TableColumnFlags_WidthFixed(), 160)
 				reaper.ImGui_TableSetupColumn(ctx, "Col 2", reaper.ImGui_TableColumnFlags_WidthFixed(), 72)
 				reaper.ImGui_TableSetupColumn(ctx, "Col 3", reaper.ImGui_TableColumnFlags_WidthFixed(), 190)
 				
@@ -4127,6 +4529,16 @@ local function main()
 						{spacing_vertical = "0"},
 						{separator_horizontal = "3", separator_color = "#3F3F48", separator_length = 148 },
 						{spacing_vertical = "7"},
+						
+						{key = "Selected Items", children = {
+							{key = "+ 1", action_function = function() TransposeSelectedItemsByInterval (1) end},
+							{key = " - 1", action_function = function() TransposeSelectedItemsByInterval (-1) end},
+							{spacing_vertical = "0"},
+							{separator_horizontal = "3", separator_color = "#3F3F48", separator_length = 148 },
+							{spacing_vertical = "7"},
+							{key = "+ 12", action_function = function() TransposeSelectedItemsByInterval (12) end},
+							{key = " - 12", action_function = function() TransposeSelectedItemsByInterval (-12) end},
+						},},
 						
 						{key = "+ Two Octave", children = {
 							{key = "+24 (C)", action_function = function() fnc_transpose_value (24) end},
@@ -4245,6 +4657,7 @@ local function main()
 				reaper.ImGui_Text(ctx, '  ')
 				reaper.ImGui_Dummy(ctx, 0, 5)  -- Добавление вертикального пространства
 				
+				
 				-- insert_item_chord_library
 				local insert_item_chord_library = {
 					key = "Chords", default_open = true, children = {
@@ -4277,6 +4690,8 @@ local function main()
 							{key = "7(6b9) v2", value = "C3, A#3, E4, A4, C#5"},
 							{key = "7(9,11,13)", value = "C3, G3, A#3, D4, F4, A4, C5"},
 							{key = "7 (13#11)", value = "C3, E3, G3, A#3, E4, F#4, A4, D5, E5, F#5, A5"},
+							{key = "7 (b9)", value = "C3, A#3, E4, C#5"},
+							{key = "7 (#9)", value = "C3, E3, A#3, D#4"},
 							{key = "7 (#9b13) v1", value = "C3, E4, G#4, A#4, D#5"},
 							{key = "7 (#9b13) v2", value = "C3, A#3, E4, G#4, C5, D#5"},
 							{key = "7 (#9b13) v3", value = "C3, E3, A#3, D#4, G#4, C5, D#5, G#5"},
@@ -4399,6 +4814,12 @@ local function main()
 				
 			reaper.ImGui_EndTable(ctx) -- Завершаем таблицу
 			end
+			
+			reaper.ImGui_SeparatorText( ctx, "Chord Detection" )
+			reaper.ImGui_PushFont (ctx, font_size_verdana_chord)
+			reaper.ImGui_Text ( ctx, " " .. getChordType(get_playing_midi() or "") )
+			reaper.ImGui_PopFont(ctx)
+			reaper.ImGui_Dummy(ctx, 0, 5)  -- Добавление вертикального пространства
 			
 		elseif selected_content == "Chord_Detection_Content_Show" then
 			
@@ -5565,7 +5986,49 @@ local function main()
 			reaper.ImGui_Dummy(ctx, 0, 20)  -- Добавление вертикального пространства
 			
 		elseif selected_content == "Mouse_Modifier_Content_Show" then
-			reaper.ImGui_SeparatorText( ctx, "Mouse Modifier" )
+			-- reaper.ImGui_SeparatorText( ctx, "Mouse Modifier" )
+			
+			local library_mouse_modifier = {
+				key = "Mouse Modifier", default_open = true, children = {
+					-- {separator_horizontal = "2", separator_color = "#EBEBEB" },
+					-- {spacing_vertical = "7"},
+					-- {separator_horizontal = "ImGui_SeparatorText", separator_text = "Text"},
+					-- {separator_horizontal = "3", separator_color = "#3F3F48", separator_length = 148 },
+					{separator_horizontal = "ImGui_SeparatorText", separator_text = "Main"},
+					{key = "Default Preset", action_function = function() RunCommandList ( "39835,39784,39282,25196,25165,25128,39801,25096,39129,39167,25480,39407,39359,25321,39448,25033,39321,39673,39289,39705,39487,39641,39417,39961,39545,39033,39065,39896,39864,39736,39097,39513,39001,39929,25071,25257,25001,25225,25289,25420,25353,25385,25448,39609,39233,39577,39201" ) end},
+					{key = "Marquee add to item selection", action_function = function() RunCommandList ( "39835,39784,39282,25196,25165,25128,39801,25096,39129,39167,25480,39407,39359,25321,39448,25033,39321,39673,39289,39705,39487,39641,39417,39961,39545,39033,39065,39896,39864,39736,39097,39513,39001,39929,25071,25257,25001,25225,25289,25420,25353,25385,25448,39609,39233,39577,39205" ) end},
+					{key = "Select Time", action_function = function() RunCommandList ( "39835,39784,39282,25196,25165,25128,39801,25096,39129,39167,25480,39407,39368,25321,39448,25033,39321,39673,39289,39705,39487,39641,39417,39961,39545,39051,39065,39896,39864,39736,39097,39513,39019,39929,25071,25257,25001,25225,25289,25420,25353,25385,25448,39609,39225,39577,39199" ) end},
+					{key = "Draw Empty MIDI Item", action_function = function() RunCommandList ( "39835,39784,39282,25196,25165,25128,39801,25096,39129,39167,25480,39407,39368,25321,39448,25033,39321,39673,39289,39705,39487,39641,39417,39961,39545,39033,39065,39896,39864,39736,39097,39513,39001,39929,25071,25257,25001,25225,25289,25420,25353,25385,25448,39609,39233,39577,39197" ) end},
+					-- {spacing_vertical = "1"},
+					-- {separator_horizontal = "3", separator_color = "#3F3F48" },
+					-- {spacing_vertical = "8"},
+					{separator_horizontal = "ImGui_SeparatorText", separator_text = "MIDI"},
+					{key = "MIDI CC lane left click/drag - Edit CC events", action_function = function() RunCommandList ( "39835,39784,39282,25196,25165,25128,39801,25096,39129,39167,25480,39407,39368,25321,39448,25033,39321,39673,39289,39705,39487,39641,39417,39961,39545,39033,39065,39896,39864,39736,39097,39513,39001,39929,25071,25257,25001,25225,25289,25420,25353,25385,25448,39609,39233,39577,39201" ) end},
+					{key = "MIDI CC lane left click/drag - Edit CC events ignoring selection", action_function = function() RunCommandList ( "39835,39784,39282,25196,25165,25128,39801,25096,39129,39167,25480,39407,39359,25321,39448,25033,39321,39673,39289,39705,39487,39641,39417,39961,39545,39033,39065,39896,39864,39736,39097,39513,39001,39929,25071,25257,25001,25225,25289,25420,25353,25385,25448,39609,39233,39577,39201" ) end},
+					{key = "Marquee add to note selection", action_function = function() RunCommandList ( "39835,39784,39282,25196,25165,25128,39801,25096,39129,39167,25480,39407,39359,25321,39448,25033,39321,39673,39289,39705,39489,39641,39417,39961,39545,39033,39065,39896,39864,39736,39097,39513,39001,39929,25071,25257,25001,25225,25289,25420,25353,25385,25448,39609,39233,39577,39201" ) end},
+					{key = "MIDI piano roll left drag - Scrub preview MIDI", action_function = function() RunCommandList ( "39835,39784,39282,25196,25165,25128,39801,25096,39129,39167,25480,39407,39359,25321,39448,25033,39321,39673,39289,39705,39496,39641,39417,39961,39545,39033,39065,39896,39864,39736,39097,39513,39001,39929,25071,25257,25001,25225,25289,25420,25353,25385,25448,39609,39233,39577,39201" ) end},
+					
+					{separator_horizontal = "ImGui_SeparatorText", separator_text = "Action Command"},
+					{key = "Remove time selection", action_id = "40635"},
+					-- {key = "www", action_function = function() RunCommandList ( "www" ) end},
+				
+					
+					--[[
+					{key = "User Functions", children = {
+						{key = "Command ID 1", action_id = "41930"},
+						{key = "Command ID 2", action_id = "_RS251990727759d3dff9cf84df740cd6a87ea0d169"},
+						{key = "User Function 2", action_function = function() reaper.Main_OnCommand(40772, 0) end},
+						{key = "User Function 3", action_function = function() us_fn1() end},
+					}},
+					]]--
+				},
+			}
+			
+			TreeNodeLibraryOutput(library_mouse_modifier) -- передаём корневой элемент
+			reaper.ImGui_Dummy(ctx, 0, 20)  -- Добавление вертикального пространства
+			
+			
+			if false then
 			cboc2 ( " Default Preset ", function() RunCommandList ("39835,39784,39282,25196,25165,25128,39801,25096,39129,39167,25480,39407,39368,25321,39448,25033,39321,39673,39289,39705,39487,39641,39417,39961,39545,39033,39065,39896,39864,39736,39097,39513,39001,39929,25071,25257,25001,25225,25289,25420,25353,25385,25448,39609,39233,39577,39205") end, 300, 25 )
 			cboc2 ( " Select Time ", function() RunCommandList ("39835,39784,39282,25196,25165,25128,39801,25096,39129,39167,25480,39407,39368,25321,39448,25033,39321,39673,39289,39705,39487,39641,39417,39961,39545,39051,39065,39896,39864,39736,39097,39513,39019,39929,25071,25257,25001,25225,25289,25420,25353,25385,25448,39609,39225,39577,39199") end, 300, 25 )
 			cboc2 ( " Main - Draw Empty MIDI Item ", function() RunCommandList ("39835,39784,39282,25196,25165,25128,39801,25096,39129,39167,25480,39407,39368,25321,39448,25033,39321,39673,39289,39705,39487,39641,39417,39961,39545,39033,39065,39896,39864,39736,39097,39513,39001,39929,25071,25257,25001,25225,25289,25420,25353,25385,25448,39609,39233,39577,39197") end, 300, 25 )
@@ -5573,6 +6036,7 @@ local function main()
 			
 			reaper.ImGui_SeparatorText( ctx, "Action Command" )
 			cboc2 ( " Remove time selection ", function() reaper.Main_OnCommand("40635", 0) end, 300, 25 ) -- Time selection: Remove (unselect) time selection
+			end
 		elseif selected_content == "Settings_Reaper_Content_Show" then
 			
 			local library_settings_reaper = {
@@ -5960,7 +6424,7 @@ local function main()
 		
 			-- library_transport_main
 			local library_transport_main = {
-				key = "Transport", children = {
+				key = "Transport", default_open = true, children = {
 					{spacing_vertical = "1"},
 					{separator_horizontal = "2", separator_color = "#A7A7A7" },
 					{spacing_vertical = "7"},
@@ -6011,13 +6475,36 @@ local function main()
 			
 		elseif selected_content == "Midi_Content_Show" then
 			reaper.ImGui_SeparatorText( ctx, " MIDI " )
+			
+			local library_midi_change = {
+				key = "Midi Program Change", default_open = true, children = {
+					{key = "Send all-notes-off and all-sounds-off to all MIDI outputs/plug-ins", action_id = "40345"},
+					{spacing_vertical = "8"},
+					{key = "Insert Midi CC (11) At Edit Cursor", action_function = function() InsertMidiInsertCC (11, 65) end},
+					{key = "× Remove All CC's From MIDI", action_function = function() delete_or_keep_cc (true) end},
+					{key = "× Remove All CC's MIDI Except Number (11)", action_function = function() delete_or_keep_cc ("11") end}, -- Удалить все CC сообщения, кроме номера 11
+					{key = "× Remove All CC's MIDI Except Number (64)", action_function = function() delete_or_keep_cc ("64") end}, -- Удалить все CC сообщения, кроме номера 11
+					{key = "× Remove All CC's MIDI Except Number (11, 64)", action_function = function() delete_or_keep_cc ("11, 64") end}, -- Удалить все CC сообщения, кроме номера 11
+					{key = "× Remove All CC's MIDI Except Number (PC)", action_function = function() delete_or_keep_cc ("PC") end}, -- Удалить все CC сообщения, кроме номера 11
+					{key = "× Remove All CC's MIDI Except Number (PB)", action_function = function() delete_or_keep_cc ("PB") end}, -- Удалить все CC сообщения, кроме номера 11
+					{key = "× Remove All CC's MIDI Except Number (AT)", action_function = function() delete_or_keep_cc ("AT") end}, -- Удалить все CC сообщения, кроме номера 11
+					{key = "× Remove All CC's MIDI Except Number (PP)", action_function = function() delete_or_keep_cc ("PP") end}, -- Удалить все CC сообщения, кроме номера 11
+					{key = "× Remove All CC's MIDI Except Number (PC, PB, AT, PP)", action_function = function() delete_or_keep_cc ("PC, PB, AT, PP") end}, -- Удалить все CC сообщения, кроме номера 11
+				},
+			}
+			
+			TreeNodeLibraryOutput(library_midi_change) -- передаём корневой элемент
+			reaper.ImGui_Dummy(ctx, 0, 20)  -- Добавление вертикального пространства
+			
+			
+			
+			if false then
 			cboc2 ( " Send all-notes-off and all-sounds-off to all MIDI outputs/plug-ins ", function() reaper.Main_OnCommand(40345, 0) end, 0, 25 )
 			cboc2 ( " Insert Midi CC (11) ", function() InsertMidiInsertCC (11, 65) end, 0, 25 )
 			reaper.ImGui_Dummy(ctx, 0, 20)  -- Добавление вертикального пространства
 			cboc2 ( " Selected Media Items Remove All CC's From MIDI ", function() delete_or_keep_cc (true) end, 0, 25 )
 			cboc2 ( " Selected Media Items Remove All CC's From MIDI (11) ", function() delete_or_keep_cc (11) end, 0, 25 )
 			reaper.ImGui_Dummy(ctx, 0, 20)  -- Добавление вертикального пространства
-			if false then
 			cboc2 ( " Insert Midi Program Change (3) (Elecric Piano) ", function() InsertMidiProgramChange (3) end, 0, 25 )
 			cboc2 ( " Insert Midi Program Change (4) (Elecric Piano) ", function() InsertMidiProgramChange (4) end, 0, 25 )
 			cboc2 ( " Insert Midi Program Change (35) (Fretless Bass) ", function() InsertMidiProgramChange (35) end, 0, 25 )
@@ -6035,12 +6522,12 @@ local function main()
 					-- {separator_horizontal = "ImGui_SeparatorText", separator_text = "Text"},
 					-- {separator_horizontal = "3", separator_color = "#3F3F48", separator_length = 148 },
 					
-					{key = "Delete Program Change At Edit Cursor", action_function = function() DeleteProgramChangeAtCursor (100) end},
+					{key = "× Delete Program Change At Edit Cursor Or Time Selection", action_function = function() DeleteProgramChangeAtCursor (100) end},
 					{spacing_vertical = "1"},
 					{separator_horizontal = "2", separator_color = "#3F3F48" },
 					{spacing_vertical = "5"},
 					
-					{key = "General MIDI", children = {
+					{key = "General MIDI", default_open = true, children = {
 						{key = "001. Acoustic Grand Piano", action_function = function() InsertMidiProgramChange (0) end},
 						{key = "002. Bright Acoustic Piano", action_function = function() InsertMidiProgramChange (1) end},
 						{key = "003. Electric Grand Piano", action_function = function() InsertMidiProgramChange (2) end},
@@ -6262,7 +6749,24 @@ local function main()
 					{key = "D#", action_function = function() reaper.SetExtState("chord_ulaYkZjtGm", "chord_value_ulaYkZjtGm", "D#", false) end},
 					{key = "D", action_function = function() reaper.SetExtState("chord_ulaYkZjtGm", "chord_value_ulaYkZjtGm", "D", false) end},
 					{key = "C#", action_function = function() reaper.SetExtState("chord_ulaYkZjtGm", "chord_value_ulaYkZjtGm", "C#", false) end},
+					{spacing_vertical = "1"},
+					{separator_horizontal = "3", separator_color = "#3F3F48", separator_length = 70 },
+					{spacing_vertical = "7"},
 					{key = "C", action_function = function() reaper.SetExtState("chord_ulaYkZjtGm", "chord_value_ulaYkZjtGm", "C", false) end},
+					{spacing_vertical = "1"},
+					{separator_horizontal = "3", separator_color = "#3F3F48", separator_length = 70 },
+					{spacing_vertical = "7"},
+					-- {key = "B", action_function = function() reaper.SetExtState("chord_ulaYkZjtGm", "chord_value_ulaYkZjtGm", "B", false) end},
+					{key = "Bb", action_function = function() reaper.SetExtState("chord_ulaYkZjtGm", "chord_value_ulaYkZjtGm", "Bb", false) end},
+					-- {key = "A", action_function = function() reaper.SetExtState("chord_ulaYkZjtGm", "chord_value_ulaYkZjtGm", "A", false) end},
+					{key = "Ab", action_function = function() reaper.SetExtState("chord_ulaYkZjtGm", "chord_value_ulaYkZjtGm", "Ab", false) end},
+					-- {key = "G", action_function = function() reaper.SetExtState("chord_ulaYkZjtGm", "chord_value_ulaYkZjtGm", "G", false) end},
+					{key = "Gb", action_function = function() reaper.SetExtState("chord_ulaYkZjtGm", "chord_value_ulaYkZjtGm", "Gb", false) end},
+					-- {key = "F", action_function = function() reaper.SetExtState("chord_ulaYkZjtGm", "chord_value_ulaYkZjtGm", "F", false) end},
+					-- {key = "E", action_function = function() reaper.SetExtState("chord_ulaYkZjtGm", "chord_value_ulaYkZjtGm", "E", false) end},
+					{key = "Eb", action_function = function() reaper.SetExtState("chord_ulaYkZjtGm", "chord_value_ulaYkZjtGm", "Eb", false) end},
+					-- {key = "D", action_function = function() reaper.SetExtState("chord_ulaYkZjtGm", "chord_value_ulaYkZjtGm", "D", false) end},
+					{key = "Db", action_function = function() reaper.SetExtState("chord_ulaYkZjtGm", "chord_value_ulaYkZjtGm", "Db", false) end},
 				},
 			}
 			
@@ -6289,6 +6793,8 @@ local function main()
 					{key = "1/6", action_function = function() fnc_note_item_length ("1/6") end},
 					{key = "1/7", action_function = function() fnc_note_item_length ("1/7") end},
 					{key = "1/8", action_function = function() fnc_note_item_length ("1/8") end},
+					{key = "1/9", action_function = function() fnc_note_item_length ("1/9") end},
+					{key = "1/10", action_function = function() fnc_note_item_length ("1/10") end},
 					{key = "1/16", action_function = function() fnc_note_item_length ("1/16") end},
 				},
 			}
@@ -6296,13 +6802,32 @@ local function main()
 			-- insert_empty_item_chord_library
 			local insert_empty_item_chord_library = {
 				key = "Insert Empty Item Chord", default_open = true, children = {
+						-- {spacing_vertical = "0"},
+						-- {separator_horizontal = "3", separator_color = "#3F3F48", separator_length = 120 },
+						-- {spacing_vertical = "5"},
 				
+					{key = "Set Text Event Midi Item At Edit Cursor", children = {
+						{key = "View: Toggle show media cues in items", action_id = "40691"}, -- █ ● ▰ ✖ ×
+						{spacing_vertical = "8"},
+						{key = "Introduction", action_function = function() InsertMIDIMarkerTextEventToSelectedItemAtEditCursor ( "Вступление" ) end}, -- █ ● ▰ ✖ ×
+						{key = "Couplet", action_function = function() InsertMIDIMarkerTextEventToSelectedItemAtEditCursor ( "Куплет" ) end}, -- █ ● ▰ ✖ ×
+						{key = "Chorus", action_function = function() InsertMIDIMarkerTextEventToSelectedItemAtEditCursor ( "Припев" ) end}, -- █ ● ▰ ✖ ×
+						{key = "Interlude", action_function = function() InsertMIDIMarkerTextEventToSelectedItemAtEditCursor ( "Проигрыш" ) end}, -- █ ● ▰ ✖ ×
+						{key = "Code", action_function = function() InsertMIDIMarkerTextEventToSelectedItemAtEditCursor ( "Кода" ) end}, -- █ ● ▰ ✖ ×
+						{spacing_vertical = "8"},
+						{key = "× Delete Text Event To Selected Item In Time Selection", action_function = function() DeleteMarkersInSelectedItemsInTimeSelection () end}, -- █ ● ▰ ✖ ×
+					},},
 					{key = "Set Item Marker At Edit Cursor", children = {
 						{key = "Introduction", action_function = function() SetTakeMarkerAtEditCursor ( "#40FF00", "Вступление" ) end}, -- █ ● ▰ ✖ ×
 						{key = "Couplet", action_function = function() SetTakeMarkerAtEditCursor ( "#40FF00", "Куплет" ) end}, -- █ ● ▰ ✖ ×
 						{key = "Chorus", action_function = function() SetTakeMarkerAtEditCursor ( "#40FF00", "Припев" ) end}, -- █ ● ▰ ✖ ×
+						{key = "Interlude", action_function = function() SetTakeMarkerAtEditCursor ( "#40FF00", "Проигрыш" ) end}, -- █ ● ▰ ✖ ×
+						{key = "Code", action_function = function() SetTakeMarkerAtEditCursor ( "#40FF00", "Кода" ) end}, -- █ ● ▰ ✖ ×
+						{separator_horizontal = "3", separator_color = "#3F3F48", separator_length = 150 },
 						{spacing_vertical = "8"},
-						{key = "Delete Take Markers SelectItem Or Time Selection", action_function = function() DeleteTakeMarkersSelectItemOrTimeSelection() end}, -- █ ● ▰ ✖ ×
+						{key = "Solo", action_function = function() SetTakeMarkerAtEditCursor ( "#40FF00", "Соло" ) end}, -- █ ● ▰ ✖ ×
+						{spacing_vertical = "8"},
+						{key = "× Delete Take Markers Select Item Or Time Selection", action_function = function() DeleteTakeMarkersSelectItemOrTimeSelection() end}, -- █ ● ▰ ✖ ×
 					},},
 					
 					{key = "Set Marker At Edit Cursor", children = {
@@ -6322,7 +6847,7 @@ local function main()
 					
 					{key = "Remove Region", children = {
 						{key = "Remove Region From Time Selection", action_function = function() CreateOrRemoveRegionFromTimeSelection (1) end},
-						{key = "Delete all regions", action_function = function() CreateOrRemoveRegionFromTimeSelection (3) end},
+						{key = "× Delete all regions", action_function = function() CreateOrRemoveRegionFromTimeSelection (3) end},
 					},},
 					
 					{key = "Create Region From", children = {
@@ -6347,54 +6872,60 @@ local function main()
 						{key = "Couplet", action_function = function() InsertEmptyItemWithNameAndColor( "Куплет", "#0070CA", note_item_length_value_ulaYkZjtGm) end},
 						{key = "Chorus", action_function = function() InsertEmptyItemWithNameAndColor( "Припев", "#E87400", note_item_length_value_ulaYkZjtGm) end},
 						{key = "Interlude", action_function = function() InsertEmptyItemWithNameAndColor( "Проигрыш", "#0A8B16", note_item_length_value_ulaYkZjtGm) end},
+						{key = "Solo Guitar", action_function = function() InsertEmptyItemWithNameAndColor( "Соло Гитара", "#0A8B16", note_item_length_value_ulaYkZjtGm) end},
+						{key = "Solo Sax", action_function = function() InsertEmptyItemWithNameAndColor( "Соло Саксофон", "#0A8B16", note_item_length_value_ulaYkZjtGm) end},
 						{key = "Code", action_function = function() InsertEmptyItemWithNameAndColor( "Кода", "#F24040", note_item_length_value_ulaYkZjtGm) end},
 					},},
-				
+					
+					-- Insert Empty Item Chord
 					{key = "Insert Empty Item Chord", default_open = true, children = {
-						{key = chord_ulaYkZjtGm .. "", action_function = function() InsertEmptyItemWithNameAndColor( chord_ulaYkZjtGm .. "", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
-						{key = chord_ulaYkZjtGm .. "6", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "6", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
-						{key = chord_ulaYkZjtGm .. "maj", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "∆", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
-						{key = chord_ulaYkZjtGm .. "maj (6/9)", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "∆ (6/9)", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
-						{key = chord_ulaYkZjtGm .. "maj (13#11)", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "∆ (13#11)", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
-						{key = chord_ulaYkZjtGm .. "maj (7#5)", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "∆ (7#5)", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
-						{spacing_vertical = "0"},
-						{separator_horizontal = "3", separator_color = "#3F3F48", separator_length = 120 },
-						{spacing_vertical = "5"},
+					
+						{key = chord_ulaYkZjtGm .. "", children = {
+							{key = chord_ulaYkZjtGm .. "", action_function = function() InsertEmptyItemWithNameAndColor( chord_ulaYkZjtGm .. "", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
+							{key = chord_ulaYkZjtGm .. "6", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "6", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
+							{key = chord_ulaYkZjtGm .. "maj", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "∆", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
+							{key = chord_ulaYkZjtGm .. "maj (6/9)", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "∆ (6/9)", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
+							{key = chord_ulaYkZjtGm .. "maj (13#11)", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "∆ (13#11)", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
+							{key = chord_ulaYkZjtGm .. "maj (7#5)", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "∆ (7#5)", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
+						},},
 						
-						{key = chord_ulaYkZjtGm .. "7", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "7", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
-						{key = chord_ulaYkZjtGm .. "7(6b9)", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "7(6b9)", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
-						{key = chord_ulaYkZjtGm .. "7(9,11,13)", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "7(9,11,13)", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
-						{key = chord_ulaYkZjtGm .. "7 (13#11)", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "7 (13#11)", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
-						{key = chord_ulaYkZjtGm .. "7 (#9b13)", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "7 (#9b13)", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
-						{key = chord_ulaYkZjtGm .. "7 (b9#9b13)", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "7 (b9#9b13)", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
-						{key = chord_ulaYkZjtGm .. "9", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "9", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
-						{spacing_vertical = "0"},
-						{separator_horizontal = "3", separator_color = "#3F3F48", separator_length = 120 },
-						{spacing_vertical = "5"},
+						{key = chord_ulaYkZjtGm .. "7", children = {
+							{key = chord_ulaYkZjtGm .. "7", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "7", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
+							{key = chord_ulaYkZjtGm .. "7(6b9)", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "7(6b9)", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
+							{key = chord_ulaYkZjtGm .. "7 (b9)", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "7 (b9)", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
+							{key = chord_ulaYkZjtGm .. "7(#9)", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "7(#9)", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
+							{key = chord_ulaYkZjtGm .. "7(9,11,13)", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "7(9,11,13)", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
+							{key = chord_ulaYkZjtGm .. "7 (13#11)", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "7 (13#11)", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
+							{key = chord_ulaYkZjtGm .. "7 (#9b13)", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "7 (#9b13)", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
+							{key = chord_ulaYkZjtGm .. "7 (b9#9b13)", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "7 (b9#9b13)", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
+							{key = chord_ulaYkZjtGm .. "9", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "9", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
+						},},
 						
-						{key = chord_ulaYkZjtGm .. "sus2", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "sus2", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
-						{key = chord_ulaYkZjtGm .. "sus4", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "sus4", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
-						{key = chord_ulaYkZjtGm .. "7sus4", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "7sus4", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
-						{key = chord_ulaYkZjtGm .. "9sus4", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "9sus4", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
-						{key = chord_ulaYkZjtGm .. "13sus4", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "13sus4", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
-						{spacing_vertical = "0"},
-						{separator_horizontal = "3", separator_color = "#3F3F48", separator_length = 120 },
-						{spacing_vertical = "5"},
+						{key = chord_ulaYkZjtGm .. "sus", children = {
+							{key = chord_ulaYkZjtGm .. "sus2", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "sus2", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
+							{key = chord_ulaYkZjtGm .. "sus4", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "sus4", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
+							{key = chord_ulaYkZjtGm .. "7sus4", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "7sus4", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
+							{key = chord_ulaYkZjtGm .. "9sus4", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "9sus4", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
+							{key = chord_ulaYkZjtGm .. "13sus4", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "13sus4", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
+						},},
 						
-						{key = chord_ulaYkZjtGm .. "m", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "m", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
-						{key = chord_ulaYkZjtGm .. "m6", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "m6", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
-						{key = chord_ulaYkZjtGm .. "m (6/9)", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "m (6/9)", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
-						{key = chord_ulaYkZjtGm .. "m7", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "m7", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
-						{key = chord_ulaYkZjtGm .. "m9", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "m9", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
-						{key = chord_ulaYkZjtGm .. "m (maj11)", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "m (maj11)", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
-						{key = chord_ulaYkZjtGm .. "m (9b13)", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "m (9b13)", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
-						{spacing_vertical = "0"},
-						{separator_horizontal = "3", separator_color = "#3F3F48", separator_length = 120 },
-						{spacing_vertical = "5"},
+						{key = chord_ulaYkZjtGm .. "m", children = {
+							{key = chord_ulaYkZjtGm .. "m", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "m", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
+							{key = chord_ulaYkZjtGm .. "m6", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "m6", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
+							{key = chord_ulaYkZjtGm .. "m (6/9)", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "m (6/9)", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
+							{key = chord_ulaYkZjtGm .. "m7", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "m7", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
+							{key = chord_ulaYkZjtGm .. "m9", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "m9", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
+							{key = chord_ulaYkZjtGm .. "m (maj11)", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "m (maj11)", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
+							{key = chord_ulaYkZjtGm .. "m (9b13)", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "m (9b13)", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
+						},},
 						
-						{key = chord_ulaYkZjtGm .. "ø", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "ø", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
-						{key = chord_ulaYkZjtGm .. "o", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "o", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
-						{key = chord_ulaYkZjtGm .. "+", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "+", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
+						{key = chord_ulaYkZjtGm .. "o ø +", children = {
+							{key = chord_ulaYkZjtGm .. "m (7b5)", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "m (7b5)", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
+							{key = chord_ulaYkZjtGm .. "ø", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "ø", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
+							{key = chord_ulaYkZjtGm .. "o", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "o", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
+							{key = chord_ulaYkZjtGm .. "+", action_function = function() InsertEmptyItemWithNameAndColor(chord_ulaYkZjtGm .. "+", color_item_empty, note_item_length_value_ulaYkZjtGm) end},
+						},},
+						
 						{spacing_vertical = "10"},
 					},},
 				},
@@ -7453,6 +7984,36 @@ local function main()
 			local library_select_items = {
 				key = "Select Items", default_open = true, children = {
 					
+					{key = "Selection set", children = {
+						{key = "Save set #001", action_id = "41229", some = ""},
+						{key = "Load set #001", action_id = "41239", some = ""},
+						{spacing_vertical = "1"},
+						{separator_horizontal = "3", separator_color = "#3F3F48" },
+						{spacing_vertical = "7"},
+						{key = "Save set #01", action_id = "41229", some = ""},
+						{key = "Save set #02", action_id = "41230", some = ""},
+						{key = "Save set #03", action_id = "41231", some = ""},
+						{key = "Save set #04", action_id = "41232", some = ""},
+						{key = "Save set #05", action_id = "41233", some = ""},
+						{key = "Save set #06", action_id = "41234", some = ""},
+						{key = "Save set #07", action_id = "41235", some = ""},
+						{key = "Save set #08", action_id = "41236", some = ""},
+						{key = "Save set #09", action_id = "41237", some = ""},
+						{key = "Save set #10", action_id = "41238", some = ""},
+						{spacing_vertical = "1"},
+						{separator_horizontal = "3", separator_color = "#3F3F48" },
+						{spacing_vertical = "7"},
+						{key = "Load set #01", action_id = "41239", some = ""},
+						{key = "Load set #02", action_id = "41240", some = ""},
+						{key = "Load set #03", action_id = "41241", some = ""},
+						{key = "Load set #04", action_id = "41242", some = ""},
+						{key = "Load set #05", action_id = "41243", some = ""},
+						{key = "Load set #06", action_id = "41244", some = ""},
+						{key = "Load set #07", action_id = "41245", some = ""},
+						{key = "Load set #08", action_id = "41246", some = ""},
+						{key = "Load set #09", action_id = "41247", some = ""},
+						{key = "Load set #10", action_id = "41248", some = ""},
+					}},
 					-- {spacing_vertical = "1"},
 					-- {separator_horizontal = "2", separator_color = "#EBEBEB" },
 					-- {spacing_vertical = "7"},

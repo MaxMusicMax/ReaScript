@@ -32,6 +32,7 @@
 -- insert_chord
 -- midi_to_note_name
 -- get_selected_notes_to_str
+-- get_selected_notes_phrase
 -- get_chords_and_notes_in_selection
 -- TransposeSelectedNotes
 -- SetMidiEditorSize
@@ -516,35 +517,113 @@ end
 -- get_selected_notes_to_str
 -- Функция для получения выделенных нот
 function get_selected_notes_to_str()
+    -- Получаем активный MIDI-тейк
+    local take = reaper.MIDIEditor_GetTake(reaper.MIDIEditor_GetActive())
+    if not take then return "No time selection or selected notes found" end
+
+    -- Проверяем наличие Time Selection
+    local time_start, time_end = reaper.GetSet_LoopTimeRange(0, 0, 0, 0, 0)
+    local has_time_selection = time_start ~= time_end
+
+    -- Если есть Time Selection, получаем ноты из этой зоны
+    if has_time_selection then
+        local notes = {}
+        local _, num_notes, _, _ = reaper.MIDI_CountEvts(take)
+        for i = 0, num_notes - 1 do
+            local _, selected, _, startppqpos, endppqpos, chan, pitch, vel = reaper.MIDI_GetNote(take, i)
+            -- Проверяем, попадает ли нота в зону Time Selection
+            local start_time = reaper.MIDI_GetProjTimeFromPPQPos(take, startppqpos)
+            local end_time = reaper.MIDI_GetProjTimeFromPPQPos(take, endppqpos)
+            if start_time >= time_start and end_time <= time_end then
+                table.insert(notes, pitch)
+            end
+        end
+        -- Если ноты найдены, сортируем и преобразуем в строку
+        if #notes > 0 then
+            table.sort(notes)
+            local note_names = {}
+            for _, pitch in ipairs(notes) do
+                table.insert(note_names, midi_to_note_name(pitch))
+            end
+            return table.concat(note_names, ", ")
+        end
+    end
+
+    -- Если нет Time Selection или нот в зоне, проверяем выделенные ноты
+    local notes = {}
+    local _, num_notes, _, _ = reaper.MIDI_CountEvts(take)
+    for i = 0, num_notes - 1 do
+        local _, selected, _, startppqpos, endppqpos, chan, pitch, vel = reaper.MIDI_GetNote(take, i)
+        if selected then
+            table.insert(notes, pitch)
+        end
+    end
+    -- Если есть выделенные ноты, сортируем и преобразуем в строку
+    if #notes > 0 then
+        table.sort(notes)
+        local note_names = {}
+        for _, pitch in ipairs(notes) do
+            table.insert(note_names, midi_to_note_name(pitch))
+        end
+        return table.concat(note_names, ", ")
+    end
+
+    -- Если ничего не найдено
+    return "No time selection or selected notes found"
+end
+-- ##################################################
+-- ##################################################
+-- get_selected_notes_phrase
+function get_selected_notes_phrase()
 	-- Получаем активный MIDI-тейк
 	local take = reaper.MIDIEditor_GetTake(reaper.MIDIEditor_GetActive())
-	if not take then return "" end
-
-	-- Получаем количество всех событий и выделенных нот
+	if not take then 
+		return "No active MIDI take found!"
+	end
+	
+	-- Получаем количество всех событий
 	local _, num_notes, _, _ = reaper.MIDI_CountEvts(take)
-
 	local notes = {}
-
-	-- Перебираем все ноты и выбираем только выделенные
+	
+	-- Получаем границы временного выделения
+	local time_start, time_end = reaper.GetSet_LoopTimeRange(false, false, 0, 0, false)
+	local is_time_selection = (time_start ~= time_end)
+	
+	-- Собираем данные о нотах
 	for i = 0, num_notes - 1 do
 		local _, selected, _, startppqpos, endppqpos, chan, pitch, vel = reaper.MIDI_GetNote(take, i)
-		if selected then
-			table.insert(notes, pitch)
+		
+		if is_time_selection then
+			-- Если есть временное выделение, добавляем ноты, попадающие в него
+			local start_time = reaper.MIDI_GetProjTimeFromPPQPos(take, startppqpos)
+			local end_time = reaper.MIDI_GetProjTimeFromPPQPos(take, endppqpos)
+			if start_time >= time_start and end_time <= time_end then
+				table.insert(notes, {startppqpos = startppqpos, pitch = pitch})
+			end
+		else
+			-- Если нет временного выделения, добавляем выделенные ноты
+			if selected then
+				table.insert(notes, {startppqpos = startppqpos, pitch = pitch})
+			end
 		end
 	end
-
-	-- Сортируем ноты по высоте (от низкой к высокой)
-	table.sort(notes)
-
+	
+	-- Проверяем, есть ли ноты
+	if #notes == 0 then
+		return "No time selection or selected notes found"
+	end
+	
+	-- Сортируем ноты по начальной позиции (startppqpos)
+	table.sort(notes, function(a, b) return a.startppqpos < b.startppqpos end)
+	
 	-- Преобразуем ноты в строковый формат
 	local note_names = {}
-	for _, pitch in ipairs(notes) do
-		table.insert(note_names, midi_to_note_name(pitch))
+	for _, note in ipairs(notes) do
+		table.insert(note_names, midi_to_note_name(note.pitch))
 	end
-
-	-- Формируем строку для вывода
+	
+	-- Возвращаем строку
 	local output = table.concat(note_names, ", ")
-
 	return output
 end
 -- ##################################################
@@ -1318,7 +1397,7 @@ local function main()
 					{spacing_vertical = "1"},
 					{separator_horizontal = "2", separator_color = "#EBEBEB" },
 					{spacing_vertical = "7"},
-					{key = "1", action_id = "41637"},
+					{key = "1", action_id = "41637"}, -- Edit: Set note length to 1
 					{key = "1/2", action_id = "41635"},
 					{key = "1/4", action_id = "41632"},
 					{key = "1/8", action_id = "41629"},
@@ -1326,26 +1405,56 @@ local function main()
 					{key = "1/32", action_id = "41623"},
 					{key = "1/64", action_id = "41620"},
 					{key = "1/128", action_id = "41618"},
+					-- {spacing_vertical = "1"},
+					-- {separator_horizontal = "2", separator_color = "#EBEBEB" },
+					-- {spacing_vertical = "7"},
+					
+					{key = "Triplet", default_open = false, children = {
+						{key = "1/2T", action_id = "41634"},
+						{key = "1/4T", action_id = "41631"},
+						{key = "1/8T", action_id = "41628"},
+						{key = "1/16T", action_id = "41625"},
+						{key = "1/32T", action_id = "41622"},
+					}},
+					-- {spacing_vertical = "1"},
+					-- {separator_horizontal = "2", separator_color = "#EBEBEB" },
+					-- {spacing_vertical = "7"},
+					{key = "Point", default_open = false, children = {
+						{key = "1/2.", action_id = "41636"},
+						{key = "1/4.", action_id = "41633"},
+						{key = "1/8.", action_id = "41630"},
+						{key = "1/16.", action_id = "41627"},
+						{key = "1/32.", action_id = "41624"},
+						{key = "1/64.", action_id = "41621"},
+						{key = "1/128.", action_id = "41619"},
+					}},
+					
 					{spacing_vertical = "1"},
 					{separator_horizontal = "2", separator_color = "#EBEBEB" },
 					{spacing_vertical = "7"},
 					
-					{key = "1/2T", action_id = "41634"},
-					{key = "1/4T", action_id = "41631"},
-					{key = "1/8T", action_id = "41628"},
-					{key = "1/16T", action_id = "41625"},
-					{key = "1/32T", action_id = "41622"},
-					{spacing_vertical = "1"},
-					{separator_horizontal = "2", separator_color = "#EBEBEB" },
-					{spacing_vertical = "7"},
+					{key = "Set Selected Note To Cursor", default_open = false, children = {
+						-- {separator_horizontal = "ImGui_SeparatorText", separator_text = "Set Selected Note To Cursor"},
+						{key = "Select Notes Right Of Cursor", action_function = function() SelectNotesFromCursor ("Right") end},
+						{key = "Select Notes Left Of Cursor", action_function = function() SelectNotesFromCursor ("Left") end},
+						{key = "Set Selected Note Start To Cursor", action_function = function() SetSelectedNotesStartToCursor(0) end},
+						{key = "Set Selected Note Ends To Cursor", action_function = function() SetSelectedNoteEndsToCursor(0) end},
+						{key = "Set Selected Note Ends To Cursor (Quantize)", action_function = function() SetSelectedNoteEndsToCursor(1) end},
+						{spacing_vertical = "7"},
+					}},
 					
-					{key = "1/2.", action_id = "41636"},
-					{key = "1/4.", action_id = "41633"},
-					{key = "1/8.", action_id = "41630"},
-					{key = "1/16.", action_id = "41627"},
-					{key = "1/32.", action_id = "41624"},
-					{key = "1/64.", action_id = "41621"},
-					{key = "1/128.", action_id = "41619"},
+					{key = "Arpeggio", default_open = false, children = {
+						-- {spacing_vertical = "7"},
+						-- {separator_horizontal = "ImGui_SeparatorText", separator_text = "Arpeggio"},
+						{key = "Set Selected Note Start To Cursor (Arpeggio 30)", action_function = function() SetSelectedNotesStartToCursor(30) end},
+						{key = "Set Selected Note Start To Cursor (Arpeggio 50)", action_function = function() SetSelectedNotesStartToCursor(50) end},
+						{key = "Set Selected Note Start To Cursor (Arpeggio 70)", action_function = function() SetSelectedNotesStartToCursor(70) end},
+						{key = "Set Selected Note Start To Cursor (Arpeggio 100)", action_function = function() SetSelectedNotesStartToCursor(100) end},
+						{key = "Set Selected Note Start To Cursor (Arpeggio 150)", action_function = function() SetSelectedNotesStartToCursor(150) end},
+						{key = "Set Selected Note Start To Cursor (Arpeggio 200)", action_function = function() SetSelectedNotesStartToCursor(200) end},
+						{spacing_vertical = "7"},
+					}},
+					
 					{spacing_vertical = "1"},
 					{separator_horizontal = "2", separator_color = "#EBEBEB" },
 					{spacing_vertical = "7"},
@@ -1362,13 +1471,7 @@ local function main()
 					-- {separator_horizontal = "2", separator_color = "#EBEBEB" },
 					{spacing_vertical = "7"},
 					
-					{separator_horizontal = "ImGui_SeparatorText", separator_text = "Set Selected Note To Cursor"},
-					{key = "Select Notes Right Of Cursor", action_function = function() SelectNotesFromCursor ("Right") end},
-					{key = "Select Notes Left Of Cursor", action_function = function() SelectNotesFromCursor ("Left") end},
-					{key = "Set Selected Note Start To Cursor", action_function = function() SetSelectedNotesStartToCursor(0) end},
-					{key = "Set Selected Note Ends To Cursor", action_function = function() SetSelectedNoteEndsToCursor(0) end},
-					{key = "Set Selected Note Ends To Cursor (Quantize)", action_function = function() SetSelectedNoteEndsToCursor(1) end},
-					{spacing_vertical = "7"},
+					
 					
 					{key = "Edit: Fit notes to time selection", action_id = "40754"},
 					{key = "Select All Notes And Fit In Time Selection", action_function = function() 
@@ -1376,15 +1479,7 @@ local function main()
 						reaper.MIDIEditor_LastFocused_OnCommand(reaper.NamedCommandLookup(40754), 0) -- Edit: Fit notes to time selection
 					end},
 					
-					{spacing_vertical = "7"},
-					{separator_horizontal = "ImGui_SeparatorText", separator_text = "Arpeggio"},
-					{key = "Set Selected Note Start To Cursor (Arpeggio 30)", action_function = function() SetSelectedNotesStartToCursor(30) end},
-					{key = "Set Selected Note Start To Cursor (Arpeggio 50)", action_function = function() SetSelectedNotesStartToCursor(50) end},
-					{key = "Set Selected Note Start To Cursor (Arpeggio 70)", action_function = function() SetSelectedNotesStartToCursor(70) end},
-					{key = "Set Selected Note Start To Cursor (Arpeggio 100)", action_function = function() SetSelectedNotesStartToCursor(100) end},
-					{key = "Set Selected Note Start To Cursor (Arpeggio 150)", action_function = function() SetSelectedNotesStartToCursor(150) end},
-					{key = "Set Selected Note Start To Cursor (Arpeggio 200)", action_function = function() SetSelectedNotesStartToCursor(200) end},
-					{spacing_vertical = "30"},
+					
 					--[[
 					{key = "User Functions", children = {
 						{key = "Command ID 1", action_id = "41930"},
@@ -1577,7 +1672,9 @@ local function main()
 			end -- render_chords_library
 				
 			-- Парсер аккордов
-			cboc2 ( " Get Notes To String ", function() print_rs ( get_selected_notes_to_str() ) end, 310, 30 )
+			cboc2 ( " Get Chord Notes To String ", function() print_rs ( get_selected_notes_to_str() ) end, 310, 30 )
+			cboc2 ( " Get Phrase Notes To String ", function() print_rs ( get_selected_notes_phrase() ) end, 310, 30 )
+			-- cboc2 ( " Get Phrase Notes To String ", function() print_rs ( '"' .. get_selected_notes_phrase() .. '"' ) end, 310, 30 )
 			-- reaper.ImGui_SameLine(ctx)  -- Размещаем следующую кнопку на той же линии
 			-- cboc2 ( " Get Chords And Notes ", function() print_rs ( get_chords_and_notes_in_selection() ) end, 310, 30 )
 			reaper.ImGui_Dummy(ctx, 0, 10)  -- Добавление вертикального пространства

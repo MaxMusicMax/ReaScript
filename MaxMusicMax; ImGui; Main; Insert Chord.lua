@@ -70,6 +70,7 @@ reaper.PreventUIRefresh(1);
 -- insert_midi_chord
 -- fnc_transpose_value
 -- fnc_note_item_length
+-- TransposeSelectedItemsByInterval
 -- InsertEmptyItemWithNameAndColor
 -- CreateRegionFromSelectedItem
 -- CreateOrRemoveRegionFromTimeSelection
@@ -564,6 +565,29 @@ function fnc_note_item_length (note_item_length)
 	reaper.SetExtState("insert_item_chord_qzzmsbnelc", "note_item_length_value_qzzmsbnelc", tostring(note_item_length), false)
 	-- checkbox_MoveEditCursor = reaper.GetExtState("insert_item_chord_qzzmsbnelc", "note_item_length_value_qzzmsbnelc")
 	-- print_rs (note_item_length)
+end
+-- #######################################
+-- #######################################
+-- TransposeSelectedItemsByInterval
+function TransposeSelectedItemsByInterval(semitones)
+	reaper.Undo_BeginBlock()
+
+	local item_count = reaper.CountSelectedMediaItems(0)
+	for i = 0, item_count - 1 do
+		local item = reaper.GetSelectedMediaItem(0, i)
+		local take = reaper.GetActiveTake(item)
+		if take and reaper.TakeIsMIDI(take) then
+			local _, note_count, _, _ = reaper.MIDI_CountEvts(take)
+			for j = 0, note_count - 1 do
+				local _, sel, _, startppq, endppq, chan, pitch, vel = reaper.MIDI_GetNote(take, j)
+				local new_pitch = math.max(0, math.min(127, pitch + semitones))
+				reaper.MIDI_SetNote(take, j, sel, nil, startppq, endppq, chan, new_pitch, vel, false)
+			end
+			reaper.MIDI_Sort(take)
+		end
+	end
+
+	reaper.Undo_EndBlock("Transpose notes by " .. semitones .. " semitones", -1)
 end
 -- #######################################
 -- #######################################
@@ -1288,7 +1312,7 @@ function main_ImGui()
 			
 			if reaper.ImGui_BeginTable(ctx, "Table", 3) then -- Создаём таблицу с 2 колонками
 				-- Первая колонка с фиксированной шириной 50px
-				reaper.ImGui_TableSetupColumn(ctx, "Col 1", reaper.ImGui_TableColumnFlags_WidthFixed(), 150)
+				reaper.ImGui_TableSetupColumn(ctx, "Col 1", reaper.ImGui_TableColumnFlags_WidthFixed(), 160)
 				reaper.ImGui_TableSetupColumn(ctx, "Col 2", reaper.ImGui_TableColumnFlags_WidthFixed(), 72)
 				reaper.ImGui_TableSetupColumn(ctx, "Col 3", reaper.ImGui_TableColumnFlags_WidthFixed(), 190)
 				
@@ -1311,8 +1335,17 @@ function main_ImGui()
 						{separator_horizontal = "3", separator_color = "#3F3F48", separator_length = 148 },
 						{spacing_vertical = "7"},
 						
+						{key = "Selected Items", children = {
+							{key = "+ 1", action_function = function() TransposeSelectedItemsByInterval (1) end},
+							{key = " - 1", action_function = function() TransposeSelectedItemsByInterval (-1) end},
+							{spacing_vertical = "0"},
+							{separator_horizontal = "3", separator_color = "#3F3F48", separator_length = 148 },
+							{spacing_vertical = "7"},
+							{key = "+ 12", action_function = function() TransposeSelectedItemsByInterval (12) end},
+							{key = " - 12", action_function = function() TransposeSelectedItemsByInterval (-12) end},
+						},},
+						
 						{key = "+ Two Octave", children = {
-							{key = "+24 (C)", action_function = function() fnc_transpose_value (24) end},
 							{key = "+23 (B)", action_function = function() fnc_transpose_value (23) end},
 							{key = "+22 (A#)", action_function = function() fnc_transpose_value (22) end},
 							{key = "+21 (A)", action_function = function() fnc_transpose_value (21) end},
