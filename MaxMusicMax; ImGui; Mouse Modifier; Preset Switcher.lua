@@ -40,9 +40,10 @@
 
 -- default_presets_at_startup
 local default_presets_at_startup = {
-    ["Main - Default Preset"] = "action_id=39835,39784,39282,25196,25165,25128,39801,25096,39129,39167,25480,39407,39359,25321,39448,25033,39321,39673,39289,39705,39487,39641,39417,39961,39545,39033,39065,39896,39864,39736,39097,39513,39001,39929,25071,25257,25001,25225,25289,25420,25353,25385,25448,39609,39233,39577,39201",
-    ["Main - Marquee add to item selection"] = "action_id=39835,39784,39282,25196,25165,25128,39801,25096,39129,39167,25480,39407,39359,25321,39448,25033,39321,39673,39289,39705,39487,39641,39417,39961,39545,39033,39065,39896,39864,39736,39097,39513,39001,39929,25071,25257,25001,25225,25289,25420,25353,25385,25448,39609,39233,39577,39205",
-    ["Main - Select Time"] = "action_id=39835,39784,39282,25196,25165,25128,39801,25096,39129,39167,25480,39407,39368,25321,39448,25033,39321,39673,39289,39705,39487,39641,39417,39961,39545,39051,39065,39896,39864,39736,39097,39513,39019,39929,25071,25257,25001,25225,25289,25420,25353,25385,25448,39609,39225,39577,39199",
+    ["Main - Default Preset"] = "action_id=39835,39784,39256,25196,25165,25128,39801,25096,39129,39167,25480,39407,39359,25321,39448,25033,39321,39673,39289,39705,39487,39641,39417,39961,39545,39033,39065,39896,39864,39736,39097,39513,39001,39929,25071,25257,25001,25225,25289,25420,25353,25385,25448,39609,39233,39577,39201",
+    ["Main - Razor (Right Drag)"] = "action_id=39835,39784,39282,25196,25165,25128,39801,25096,39129,39167,25480,39407,39359,25321,39448,25033,39321,39673,39289,39705,39487,39641,39417,39961,39545,39033,39065,39896,39864,39736,39097,39513,39001,39929,25071,25257,25001,25225,25289,25420,25353,25385,25448,39609,39233,39577,39201",
+    ["Main - Select Time (Left Drag)"] = "action_id=39835,39784,39282,25196,25165,25128,39801,25096,39129,39167,25480,39407,39368,25321,39448,25033,39321,39673,39289,39705,39487,39641,39417,39961,39545,39051,39065,39896,39864,39736,39097,39513,39019,39929,25071,25257,25001,25225,25289,25420,25353,25385,25448,39609,39225,39577,39199",
+    ["Main - Select Time (Right Drag)"] = "action_id=39835,39784,39260,25196,25165,25128,39801,25096,39129,39167,25480,39407,39359,25321,39448,25033,39321,39673,39289,39705,39487,39641,39417,39961,39545,39033,39065,39896,39864,39736,39097,39513,39001,39929,25071,25257,25001,25225,25289,25420,25353,25385,25448,39609,39233,39577,39201",
     ["Main - Draw Empty MIDI Item"] = "action_id=39835,39784,39282,25196,25165,25128,39801,25096,39129,39167,25480,39407,39368,25321,39448,25033,39321,39673,39289,39705,39487,39641,39417,39961,39545,39033,39065,39896,39864,39736,39097,39513,39001,39929,25071,25257,25001,25225,25289,25420,25353,25385,25448,39609,39233,39577,39197",
     ["MIDI CC lane left click/drag - Edit CC events"] = "action_id=39835,39784,39282,25196,25165,25128,39801,25096,39129,39167,25480,39407,39368,25321,39448,25033,39321,39673,39289,39705,39487,39641,39417,39961,39545,39033,39065,39896,39864,39736,39097,39513,39001,39929,25071,25257,25001,25225,25289,25420,25353,25385,25448,39609,39233,39577,39201",
     ["MIDI CC lane left click/drag - Edit CC events ignoring selection"] = "action_id=39835,39784,39282,25196,25165,25128,39801,25096,39129,39167,25480,39407,39359,25321,39448,25033,39321,39673,39289,39705,39487,39641,39417,39961,39545,39033,39065,39896,39864,39736,39097,39513,39001,39929,25071,25257,25001,25225,25289,25420,25353,25385,25448,39609,39233,39577,39201",
@@ -1691,6 +1692,87 @@ local function DrawMenu(items, parent_label)
 end
 -- #################################################
 -- #################################################
+function TreeNodeLibraryOutput_2(node)
+	local function HexToColor(hex)
+		hex = hex:gsub("#", "")
+		local r = tonumber(hex:sub(1, 2), 16)
+		local g = tonumber(hex:sub(3, 4), 16)
+		local b = tonumber(hex:sub(5, 6), 16)
+		return 0xFF + (b * 0x100) + (g * 0x10000) + (r * 0x1000000)
+	end
+	
+	local function ThickSeparator(separator_horizontal, separator_color, separator_length)
+		local drawList = reaper.ImGui_GetWindowDrawList(ctx) -- Передаём ctx
+		local x1, y1 = reaper.ImGui_GetCursorScreenPos(ctx)
+		-- Если указан separator_length, используем его, иначе на всю ширину окна
+		local x2 = x1 + (separator_length or reaper.ImGui_GetWindowWidth(ctx))
+		-- Толщина разделителя
+		local thickness = tonumber(separator_horizontal) or 1
+		-- Преобразуем цвет из #RRGGBB в формат 0xAARRGGBB
+		local color = HexToColor(separator_color or "#3F3F48")
+		-- Рисуем горизонтальную линию
+		reaper.ImGui_DrawList_AddLine(drawList, x1, y1 + thickness, x2, y1 + thickness, color, thickness)
+	end
+	
+	if node.separator_horizontal then
+		if node.separator_horizontal == "ImGui_SeparatorText" then
+			local separator_text = node.separator_text or "" -- Используем переданный текст или пустую строку
+			reaper.ImGui_SeparatorText(ctx, separator_text)
+		else
+			-- ThickSeparator(node.separator_horizontal, node.separator_color)
+			ThickSeparator(node.separator_horizontal, node.separator_color, node.separator_length)
+		end
+		return
+	end
+	
+	if node.is_separator then -- Если это разделитель, выводим его
+		reaper.ImGui_Separator(ctx)
+		return
+	end
+	
+	if node.spacing_vertical then -- Если встречаем spacing_vertical, добавляем вертикальное пространство
+		local spacing_vertical = tonumber(node.spacing_vertical) -- Преобразуем значение в число
+		if spacing_vertical then
+			reaper.ImGui_Dummy(ctx, 0, spacing_vertical) -- Добавление вертикального пространства
+		end
+		return
+	end
+	
+	if node.key then
+		local flags = node.default_open and reaper.ImGui_TreeNodeFlags_DefaultOpen() or 0
+		
+		if node.children then
+			if reaper.ImGui_TreeNodeEx(ctx, node.key, node.key, flags) then
+				for _, child in ipairs(node.children) do
+					TreeNodeLibraryOutput_2(child)
+				end
+				reaper.ImGui_TreePop(ctx)
+			end
+		else
+			local command_id = node.action_id and reaper.NamedCommandLookup(node.action_id)
+			local is_active = command_id and reaper.GetToggleCommandStateEx(0, command_id) == 1 or false
+
+			if reaper.ImGui_Selectable(ctx, node.key, is_active) then
+				if command_id then
+					reaper.Main_OnCommand(command_id, 0)
+				elseif node.action_function then
+					node.action_function()
+				end
+				
+				if node.set_focus ~= nil then -- node.set_focus — существует
+					
+				else -- node.set_focus — не существует
+					reaper.JS_Window_SetFocus(reaper.GetMainHwnd())
+					reaper.JS_Window_SetForeground(reaper.GetMainHwnd())
+				end
+				
+			end
+		end
+		
+	end
+end
+-- #################################################
+-- #################################################
 function TreeNodeLibraryOutput(node)
 	
 	local function HexToColor(hex)
@@ -1987,10 +2069,13 @@ function main()
 		if selected_content == "" then
 		elseif selected_content == "Preset_Mouse_Modifiers_Content_Show" then
 			reaper.ImGui_SeparatorText( ctx, "User Preset Mouse Modifiers" )
+			
 			sorted_presets = SortPresets()
 			
 			if #sorted_presets > 0 then -- attempt to compare number with table
 			
+			--[[
+			]]--
 				for _, preset in ipairs(sorted_presets) do
 					if preset.name ~= "Last_Selected_Preset" then -- Исключаем "Last_Selected_Preset"
 						if reaper.ImGui_Selectable(ctx, preset.name, selected_preset == preset.name) then
@@ -1999,13 +2084,28 @@ function main()
 						end
 					end
 				end
+				
+
 			else
 				reaper.ImGui_Text(ctx, "No Preset")
 			end
 			
+			
+			local action_command_page_user_presets = {
+				key = "Action Command", default_open = true, children = {
+					{key = "Set Take Marker At Edit Cursor", action_function = function() SetTakeMarkerAtEditCursor ( "#40FF00", "" ) end}, 
+					{key = "Time selection: Remove (unselect) time selection", action_id = "40635"},
+					{spacing_vertical = "0"},
+					{separator_horizontal = "3", separator_color = "#3F3F48", separator_length = 300 },
+					{spacing_vertical = "7"},
+					{key = "Hand scroll", action_id = "39770"},
+					{key = "Set edit cursor, hand scroll and horizontal zoom", action_id = "39784"},
+				},
+			}
+			
 			reaper.ImGui_Dummy(ctx, 0, 5)  -- Добавление вертикального пространства
-			reaper.ImGui_SeparatorText( ctx, "Action Command" )
-			cboc2 ( " Remove time selection ", function() reaper.Main_OnCommand("40635", 0) end, 300, 25 ) -- Time selection: Remove (unselect) time selection
+			reaper.ImGui_SeparatorText( ctx, "" )
+			TreeNodeLibraryOutput_2(action_command_page_user_presets) -- передаём корневой элемент
 			
 		elseif selected_content == "Settings_Content_Show" then
 			reaper.ImGui_SeparatorText( ctx, "Settings" )
