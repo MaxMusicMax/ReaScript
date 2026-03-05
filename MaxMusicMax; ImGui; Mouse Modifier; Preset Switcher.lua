@@ -37,9 +37,21 @@
 -- #######################################
 -- default_preset_at_startup
 -- Переменная для значения [Default Preset] при запуске
+local default_presets_at_startup = {
+	{ name = "Main - Default Preset", value = "action_id=39835,39784,39256,25196,25165,25128,39801,25096,39129,39167,25480,39407,39359,25321,39448,25033,39321,39673,39289,39705,39487,39641,39417,39961,39545,39033,39065,39896,39864,39736,39097,39513,39001,39929,25071,25257,25001,25225,25289,25420,25353,25385,25448,39609,39233,39577,39201" },
+	{ name = "Main - Razor (Right Drag)", value = "action_id=39835,39784,39282,25196,25165,25128,39801,25096,39129,39167,25480,39407,39359,25321,39448,25033,39321,39673,39289,39705,39487,39641,39417,39961,39545,39033,39065,39896,39864,39736,39097,39513,39001,39929,25071,25257,25001,25225,25289,25420,25353,25385,25448,39609,39233,39577,39201" },
+	{ name = "Main - Select Time (Left Drag)", value = "action_id=39835,39784,39282,25196,25165,25128,39801,25096,39129,39167,25480,39407,39368,25321,39448,25033,39321,39673,39289,39705,39487,39641,39417,39961,39545,39051,39065,39896,39864,39736,39097,39513,39019,39929,25071,25257,25001,25225,25289,25420,25353,25385,25448,39609,39225,39577,39199" },
+	{ name = "Main - Select Time (Right Drag)", value = "action_id=39835,39784,39260,25196,25165,25128,39801,25096,39129,39167,25480,39407,39359,25321,39448,25033,39321,39673,39289,39705,39487,39641,39417,39961,39545,39033,39065,39896,39864,39736,39097,39513,39001,39929,25071,25257,25001,25225,25289,25420,25353,25385,25448,39609,39233,39577,39201" },
+	{ name = "Main - Draw Empty MIDI Item", value = "action_id=39835,39784,39282,25196,25165,25128,39801,25096,39129,39167,25480,39407,39368,25321,39448,25033,39321,39673,39289,39705,39487,39641,39417,39961,39545,39033,39065,39896,39864,39736,39097,39513,39001,39929,25071,25257,25001,25225,25289,25420,25353,25385,25448,39609,39233,39577,39197" },
+	{ name = "MIDI - CC lane left click/drag - Edit CC events", value = "action_id=39835,39784,39282,25196,25165,25128,39801,25096,39129,39167,25480,39407,39368,25321,39448,25033,39321,39673,39289,39705,39487,39641,39417,39961,39545,39033,39065,39896,39864,39736,39097,39513,39001,39929,25071,25257,25001,25225,25289,25420,25353,25385,25448,39609,39233,39577,39201" },
+	{ name = "MIDI - CC lane left click/drag - Edit CC events ignoring selection", value = "action_id=39835,39784,39282,25196,25165,25128,39801,25096,39129,39167,25480,39407,39359,25321,39448,25033,39321,39673,39289,39705,39487,39641,39417,39961,39545,39033,39065,39896,39864,39736,39097,39513,39001,39929,25071,25257,25001,25225,25289,25420,25353,25385,25448,39609,39233,39577,39201" },
+	{ name = "MIDI - Marquee add to note selection", value = "action_id=39835,39784,39282,25196,25165,25128,39801,25096,39129,39167,25480,39407,39359,25321,39448,25033,39321,39673,39289,39705,39489,39641,39417,39961,39545,39033,39065,39896,39864,39736,39097,39513,39001,39929,25071,25257,25001,25225,25289,25420,25353,25385,25448,39609,39233,39577,39201" },
+	{ name = "MIDI - piano roll left drag - Scrub preview MIDI", value = "action_id=39835,39784,39282,25196,25165,25128,39801,25096,39129,39167,25480,39407,39359,25321,39448,25033,39321,39673,39289,39705,39496,39641,39417,39961,39545,39033,39065,39896,39864,39736,39097,39513,39001,39929,25071,25257,25001,25225,25289,25420,25353,25385,25448,39609,39233,39577,39201" },
+}
+
 
 -- default_presets_at_startup
-local default_presets_at_startup = {
+local default_presets_at_startup_v1 = {
     ["Main - Default Preset"] = "action_id=39835,39784,39256,25196,25165,25128,39801,25096,39129,39167,25480,39407,39359,25321,39448,25033,39321,39673,39289,39705,39487,39641,39417,39961,39545,39033,39065,39896,39864,39736,39097,39513,39001,39929,25071,25257,25001,25225,25289,25420,25353,25385,25448,39609,39233,39577,39201",
     ["Main - Razor (Right Drag)"] = "action_id=39835,39784,39282,25196,25165,25128,39801,25096,39129,39167,25480,39407,39359,25321,39448,25033,39321,39673,39289,39705,39487,39641,39417,39961,39545,39033,39065,39896,39864,39736,39097,39513,39001,39929,25071,25257,25001,25225,25289,25420,25353,25385,25448,39609,39233,39577,39201",
     ["Main - Select Time (Left Drag)"] = "action_id=39835,39784,39282,25196,25165,25128,39801,25096,39129,39167,25480,39407,39368,25321,39448,25033,39321,39673,39289,39705,39487,39641,39417,39961,39545,39051,39065,39896,39864,39736,39097,39513,39019,39929,25071,25257,25001,25225,25289,25420,25353,25385,25448,39609,39225,39577,39199",
@@ -1955,8 +1967,61 @@ local function DeleteLastSelectedPreset()
 end
 -- ##################################################
 -- ##################################################
+local function EnsureDefaultPresets(presets_array)
+	local file = io.open(preset_file_save, "r")
+	local lines = {}
+	local section_data = {} -- Таблица для хранения содержимого всех секций
+
+	-- Считываем текущий INI-файл и собираем секции
+	if file then
+		local current_section = nil
+		for line in file:lines() do
+			local section_name = line:match("^%[(.+)%]$") 
+			if section_name then
+				current_section = section_name
+				section_data[current_section] = {}
+			elseif current_section then
+				table.insert(section_data[current_section], line)
+			end
+			table.insert(lines, line)
+		end
+		file:close()
+	end
+
+	-- Проверяем и обновляем секции из массива
+	for _, preset in ipairs(presets_array) do
+		local section_name = preset.name
+		local content = preset.value or ""
+		if section_data[section_name] then
+			-- Перезаписываем содержимое существующей секции
+			section_data[section_name] = {content}
+		else
+			-- Добавляем новую секцию
+			section_data[section_name] = {content}
+		end
+	end
+
+	-- Перезаписываем файл
+	file = io.open(preset_file_save, "w")
+	if file then
+		for section_name, content in pairs(section_data) do
+			file:write("[" .. section_name .. "]\n")
+			for _, line in ipairs(content) do
+				file:write(line .. "\n")
+			end
+		end
+		file:close()
+	else
+		-- reaper.ShowConsoleMsg("Ошибка: Не удалось открыть файл для записи секций.\n")
+	end
+end
+
+-- вызов
+EnsureDefaultPresets(default_presets_at_startup)
+-- ##################################################
+-- ##################################################
 -- EnsureDefaultPresets
-local function EnsureDefaultPresets()
+local function EnsureDefaultPresets_v1()
 	local file = io.open(preset_file_save, "r")
 	local lines = {}
 	local sections_found = {}
@@ -2006,7 +2071,7 @@ local function EnsureDefaultPresets()
 end
 
 -- Вызов функции при запуске скрипта
-EnsureDefaultPresets()
+-- EnsureDefaultPresets()
 -- ##################################################
 -- ##################################################
 -- cboc2 / create_button_one_click2
@@ -2070,12 +2135,14 @@ function main()
 		elseif selected_content == "Preset_Mouse_Modifiers_Content_Show" then
 			reaper.ImGui_SeparatorText( ctx, "User Preset Mouse Modifiers" )
 			
-			sorted_presets = SortPresets()
-			
-			if #sorted_presets > 0 then -- attempt to compare number with table
-			
 			--[[
-			]]--
+			sorted_presets = SortPresets()
+			local presets_table = {}
+			for name, _ in pairs(default_presets_at_startup) do
+				table.insert(presets_table, { name = name })
+			end
+			sorted_presets = presets_table
+			if #sorted_presets > 0 then -- attempt to compare number with table
 				for _, preset in ipairs(sorted_presets) do
 					if preset.name ~= "Last_Selected_Preset" then -- Исключаем "Last_Selected_Preset"
 						if reaper.ImGui_Selectable(ctx, preset.name, selected_preset == preset.name) then
@@ -2084,8 +2151,22 @@ function main()
 						end
 					end
 				end
-				
+			else
+				reaper.ImGui_Text(ctx, "No Preset")
+			end
+			]]--
+			
+			sorted_presets = default_presets_at_startup
 
+			if #sorted_presets > 0 then
+				for _, preset in ipairs(sorted_presets) do
+					if preset.name ~= "Last_Selected_Preset" then -- Исключаем "Last_Selected_Preset"
+						if reaper.ImGui_Selectable(ctx, preset.name, selected_preset == preset.name) then
+							selected_preset = preset.name
+							ApplyPreset(preset.name) -- Применяем пресет при выборе
+						end
+					end
+				end
 			else
 				reaper.ImGui_Text(ctx, "No Preset")
 			end
@@ -2093,7 +2174,6 @@ function main()
 			
 			local action_command_page_user_presets = {
 				key = "Action Command", default_open = true, children = {
-					{key = "Set Take Marker At Edit Cursor", action_function = function() SetTakeMarkerAtEditCursor ( "#40FF00", "" ) end}, 
 					{key = "Time selection: Remove (unselect) time selection", action_id = "40635"},
 					{spacing_vertical = "0"},
 					{separator_horizontal = "3", separator_color = "#3F3F48", separator_length = 300 },
