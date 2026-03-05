@@ -48,6 +48,8 @@ local color_item_empty = "#000000"
 -- TransposeSelectedItemsByInterval
 -- MoveMutedItemsToNewTrack
 -- DeleteTakeMarkersSelectItemOrTimeSelection
+-- PrintTakeMarkers
+-- PrintTakeMarkersInTimeSelection
 -- TreeNodeLibraryOutput
 -- GetTimeSelectionFormatted
 -- GetMouseTimeStartZero
@@ -880,6 +882,100 @@ function DeleteTakeMarkersSelectItemOrTimeSelection()
 	end
 	reaper.Undo_EndBlock("Удаление Take Markers в выделенных айтемах", -1)
 end
+-- ##################################################
+-- ##################################################
+-- PrintTakeMarkers
+function PrintTakeMarkers(offset_str)
+	local function strToSeconds(time_str)
+		local sign = 1
+		if string.sub(time_str,1,1) == "-" then
+			sign = -1
+			time_str = string.sub(time_str,2)
+		end
+		local h, m, s, ms = string.match(time_str, "(%d+):(%d+):(%d+)[.,](%d+)")
+		if not h then return 0 end
+		return sign * (tonumber(h)*3600 + tonumber(m)*60 + tonumber(s) + tonumber(ms)/1000)
+	end
+
+	local function formatTime(seconds)
+		local h = math.floor(seconds / 3600)
+		local m = math.floor((seconds % 3600) / 60)
+		local s = math.floor(seconds % 60)
+		local ms = math.floor((seconds - math.floor(seconds)) * 1000 + 0.5)
+		return string.format("%02d:%02d:%02d,%03d", h, m, s, ms)
+	end
+
+	local offset = offset_str and strToSeconds(offset_str) or 0
+
+	local item = reaper.GetSelectedMediaItem(0, 0)
+	if not item then return end
+
+	local item_pos = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
+	local take = reaper.GetActiveTake(item)
+	if not take then return end
+
+	local num_markers = reaper.GetNumTakeMarkers(take)
+
+	for i = 0, num_markers - 1 do
+		local retval, name, color = reaper.GetTakeMarker(take, i)
+		if retval then
+			local time = retval
+			-- local project_time = item_pos + time + offset
+			local project_time = time + offset
+			print_rs(formatTime(project_time) .. "¦" .. (name or ""))
+			-- print_rs( formatTime(project_time) )
+		end
+	end
+end
+-- PrintTakeMarkers("-00:00:01,000")
+-- ##################################################
+-- ##################################################
+-- PrintTakeMarkersInTimeSelection
+function PrintTakeMarkersInTimeSelection(offset_str)
+	local function strToSeconds(time_str)
+		local sign = 1
+		if string.sub(time_str,1,1) == "-" then
+			sign = -1
+			time_str = string.sub(time_str,2)
+		end
+		local h, m, s, ms = string.match(time_str, "(%d+):(%d+):(%d+)[.,](%d+)")
+		if not h then return 0 end
+		return sign * (tonumber(h)*3600 + tonumber(m)*60 + tonumber(s) + tonumber(ms)/1000)
+	end
+
+	local function formatTime(seconds)
+		local h = math.floor(seconds / 3600)
+		local m = math.floor((seconds % 3600) / 60)
+		local s = math.floor(seconds % 60)
+		local ms = math.floor((seconds - math.floor(seconds)) * 1000 + 0.5)
+		return string.format("%02d:%02d:%02d,%03d", h, m, s, ms)
+	end
+
+	local offset = offset_str and strToSeconds(offset_str) or 0
+
+	local sel_start, sel_end = reaper.GetSet_LoopTimeRange(false, false, 0, 0, false)
+
+	local item = reaper.GetSelectedMediaItem(0, 0)
+	if not item then return end
+
+	local item_pos = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
+	local take = reaper.GetActiveTake(item)
+	if not take then return end
+
+	local num_markers = reaper.GetNumTakeMarkers(take)
+
+	for i = 0, num_markers - 1 do
+		local retval, name, color = reaper.GetTakeMarker(take, i)
+		if retval then
+			local project_time = item_pos + retval + offset
+			if project_time >= sel_start and project_time <= sel_end then
+				-- reaper.ShowConsoleMsg(formatTime(project_time) .. "¦" .. (name or "") .. "\n")
+				print_rs(formatTime(retval + offset) .. "¦" .. (name or ""))
+			end
+		end
+	end
+end
+-- PrintTakeMarkersInTimeSelection("00:00:01,000")
 -- ##################################################
 -- ##################################################
 -- TreeNodeLibraryOutput
@@ -4274,6 +4370,7 @@ local menu_structure = {
 		}},
 		
 		{label = "TimeBase", show_content = "TimeBase_Content_Show"},
+		{label = "Time Selection", show_content = "Time_Selection_Content_Show"},
 		{label = "Tempo Envelope", show_content = "Tempo_Envelope_Content_Show"},
 		{label = "Track", children = {
 			{label = "Automation", show_content = "Track_Automation_Content_Show"},
@@ -4476,14 +4573,41 @@ local function main()
 		elseif selected_content == "Insert_Item_Chord_Content_Show" then
 			reaper.ImGui_SeparatorText(ctx, "Insert Item Chord")
 			
-			cboc2(" Insert Empty Item Chord ", function()
-				selected_content = "Insert_Empty_Item_Chord_Content_Show"
-				reaper.SetExtState("MaxMusicMax_ImGuiAlphaWindow", "ImGuiCurrentMenuItem", selected_content, true) 
-			end, 0, 25)
+			-- cboc2(" Insert Empty Item Chord ", function()
+				-- selected_content = "Insert_Empty_Item_Chord_Content_Show"
+				-- reaper.SetExtState("MaxMusicMax_ImGuiAlphaWindow", "ImGuiCurrentMenuItem", selected_content, true) 
+			-- end, 0, 25)
+			
+			local library_item_chord_menu = {
+				key = "Item Chord Menu", default_open = false, children = {
+					-- {spacing_vertical = "0"},
+					-- {separator_horizontal = "3", separator_color = "#3F3F48", separator_length = 148 },
+					-- {spacing_vertical = "7"},
+					{key = "Chord Detection", action_function = function() selected_content = "Chord_Detection_Content_Show" reaper.SetExtState("MaxMusicMax_ImGuiAlphaWindow", "ImGuiCurrentMenuItem", selected_content, true)  end},
+					{spacing_vertical = "0"},
+					{separator_horizontal = "2", separator_color = "#3F3F48", separator_length = 148 },
+					{spacing_vertical = "7"},
+					{key = "Insert Item Chord", action_function = function() selected_content = "Insert_Item_Chord_Content_Show" reaper.SetExtState("MaxMusicMax_ImGuiAlphaWindow", "ImGuiCurrentMenuItem", selected_content, true)  end},
+					{key = "Insert Item Chord Empty", action_function = function() selected_content = "Insert_Empty_Item_Chord_Content_Show" reaper.SetExtState("MaxMusicMax_ImGuiAlphaWindow", "ImGuiCurrentMenuItem", selected_content, true)  end},
+					{spacing_vertical = "0"},
+					{separator_horizontal = "2", separator_color = "#3F3F48", separator_length = 148 },
+					{spacing_vertical = "7"},
+					{key = "Set Name Selected Track Or Item", action_function = function() selected_content = "Track_Set_Name_Content_Show" reaper.SetExtState("MaxMusicMax_ImGuiAlphaWindow", "ImGuiCurrentMenuItem", selected_content, true)  end},
+
+				},
+			}
+				
+			TreeNodeLibraryOutput(library_item_chord_menu) -- передаём корневой элемент
 			
 			reaper.ImGui_Dummy(ctx, 0, 5)  -- Добавление вертикального пространства
 			
+			reaper.ImGui_InputText(ctx, '##chord', getChordType(get_playing_midi() or "") )
 			reaper.ImGui_InputText(ctx, '##nameNote',  get_playing_midi(true) or "" )
+			-- reaper.ImGui_Text(ctx, getChordType( get_playing_midi() or "", true) )
+			reaper.ImGui_InputText(ctx, '##step', getChordType( get_playing_midi() or "", true) )
+			-- reaper.ImGui_Text(ctx, get_playing_midi() or "")
+			reaper.ImGui_InputText(ctx, '##number',  get_playing_midi() or "" )
+			
 			
 			local transpose_value_ulaYkZjtGm = reaper.GetExtState("insert_item_chord_ulaYkZjtGm", "transpose_value_ulaYkZjtGm")
 			transpose_value_ulaYkZjtGm = (transpose_value_ulaYkZjtGm ~= "" and tonumber(transpose_value_ulaYkZjtGm)) or 0
@@ -4676,7 +4800,10 @@ local function main()
 						{key = "maj", children = {
 							{key = "maj v1", value = "C3, B3, E4, G4"},
 							{key = "maj v2", value = "C3, E3, G3, B3, E4, G4, B4, E5, G5"},
+							{key = "maj (9) v1", value = "C3, D4, E4, G4, B4"},
+							{key = "maj (9) v2", value = "C3, E4, G4, B4, D5"},
 							{key = "maj (6/9)", value = "C3, B3, E4, A4, D5, G5"},
+							{key = "maj (7/13)", value = "C3, B3, D4, E4, A4"},
 							{key = "maj (13#11)", value = "C3, E3, A3, D4, F#4, B4, D5, E5, F#5, A5"},
 							{key = "maj (7#5)", value = "C3, E3, G#3, B3, E4, G#4, B4, E5, G#5"},
 						},},
@@ -4716,8 +4843,17 @@ local function main()
 							{key = "m9 v1", value = "C3, A#3, D4, D#4, G4"},
 							{key = "m9 v2", value = "C3, G3, A#3, D4, D#4"},
 							{key = "m9 v3", value = "C3, D#3, G3, A#3, D4, G4, A#4, D5, D#5, G5"},
+							{key = "m9 v4", value = "C3, D4, D#4, G4, C5"},
 							{key = "m (maj11)", value = "C3, D#3, G3, B3, D4, D#4, F4, G4, B4, D5, F5"},
 							{key = "m (9b13)", value = "C3, G#3, A#3, D4, D#4, G4, A#4, C5, D5, D#5, G#5"},
+						},},
+						{key = "sus", children = {
+							{key = "sus4 (bass 1)", value = "C3, F3, G3"},
+							{key = "sus4 (bass 4)", value = "F3, G3, C4"},
+							{key = "sus4 (bass 5)", value = "G3, C4, F4"},
+							{key = "sus2 (bass 1)", value = "C3, D3, G3"},
+							{key = "sus2 (bass 2)", value = "D3, G3, C4"},
+							{key = "sus2 (bass 5)", value = "G3, C4, D4"},
 						},},
 					},
 				}
@@ -4823,7 +4959,34 @@ local function main()
 			
 		elseif selected_content == "Chord_Detection_Content_Show" then
 			
-			reaper.ImGui_Text( ctx,  "Select the desired track and start playback" )
+			-- reaper.ImGui_Text( ctx,  "Select the desired track and start playback" )
+			reaper.ImGui_SeparatorText( ctx, " Select the desired track and start playback " )
+			
+			local library_item_chord_menu = {
+				key = "Item Chord Menu", default_open = false, children = {
+					-- {spacing_vertical = "0"},
+					-- {separator_horizontal = "3", separator_color = "#3F3F48", separator_length = 148 },
+					-- {spacing_vertical = "7"},
+					{key = "Chord Detection", action_function = function() selected_content = "Chord_Detection_Content_Show" reaper.SetExtState("MaxMusicMax_ImGuiAlphaWindow", "ImGuiCurrentMenuItem", selected_content, true)  end},
+					{spacing_vertical = "0"},
+					{separator_horizontal = "2", separator_color = "#3F3F48", separator_length = 148 },
+					{spacing_vertical = "7"},
+					{key = "Insert Item Chord", action_function = function() selected_content = "Insert_Item_Chord_Content_Show" reaper.SetExtState("MaxMusicMax_ImGuiAlphaWindow", "ImGuiCurrentMenuItem", selected_content, true)  end},
+					{key = "Insert Item Chord Empty", action_function = function() selected_content = "Insert_Empty_Item_Chord_Content_Show" reaper.SetExtState("MaxMusicMax_ImGuiAlphaWindow", "ImGuiCurrentMenuItem", selected_content, true)  end},
+					{spacing_vertical = "0"},
+					{separator_horizontal = "2", separator_color = "#3F3F48", separator_length = 148 },
+					{spacing_vertical = "7"},
+					{key = "Set Name Selected Track Or Item", action_function = function() selected_content = "Track_Set_Name_Content_Show" reaper.SetExtState("MaxMusicMax_ImGuiAlphaWindow", "ImGuiCurrentMenuItem", selected_content, true)  end},
+
+				},
+			}
+				
+			TreeNodeLibraryOutput(library_item_chord_menu) -- передаём корневой элемент
+			
+			
+			
+			
+			
 			
 			reaper.ImGui_Dummy(ctx, 0, 10)  -- Добавление вертикального пространства
 			reaper.ImGui_PushFont (ctx, font_size_verdana_chord)
@@ -5223,19 +5386,36 @@ local function main()
 		end
 			
 		elseif selected_content == "Marker_Content_Show" then
-			reaper.ImGui_SeparatorText( ctx, "Add/edit take marker" )
-			cboc2 ( " Set Take Marker At Edit Cursor ", function() SetTakeMarkerAtEditCursor("#40FF00", "✖") end, 0, 25 ) -- █ ● ▰ ✖ ×
-			reaper.ImGui_Dummy(ctx, 0, 15)  -- Добавление вертикального пространства
-			cboc2 ( " Item: Add/edit take marker at play position or edit cursor ", function() reaper.Main_OnCommand(42385, 0) end, 0, 25 )
-			cboc2 ( " Item: Quick add take marker at play position or edit cursor ", function() reaper.Main_OnCommand(42390, 0) end, 0, 25 )
-			reaper.ImGui_Dummy(ctx, 0, 15)  -- Добавление вертикального пространства
 			
-			cboc2 ( " Item: Set cursor to next take marker in selected items ", function() reaper.Main_OnCommand(42394, 0) end, 0, 25 )
-			cboc2 ( " Item: Set cursor to previous take marker in selected items ", function() reaper.Main_OnCommand(42393, 0) end, 0, 25 )
-			reaper.ImGui_Dummy(ctx, 0, 15)  -- Добавление вертикального пространства
+			local insert_empty_item_chord_library = {
+				key = "Add / Edit Take Marker", default_open = true, children = {
+					{key = "Set Take Marker At Edit Cursor", action_function = function() SetTakeMarkerAtEditCursor ( "#40FF00", "" ) end}, -- █ ● ▰ ✖ ×
+					{spacing_vertical = "0"},
+					{separator_horizontal = "3", separator_color = "#3F3F48", separator_length = 300 },
+					{spacing_vertical = "7"},
+					{key = "Print Take Markers", action_function = function() PrintTakeMarkers () end},
+					{key = "Print Take Markers In Time Selection", action_function = function() PrintTakeMarkersInTimeSelection () end},
+					
+					{spacing_vertical = "0"},
+					{separator_horizontal = "3", separator_color = "#3F3F48", separator_length = 300 },
+					{spacing_vertical = "7"},
+					{key = "Item: Add/edit take marker at play position or edit cursor", action_id = "42385"},
+					{key = "Item: Quick add take marker at play position or edit cursor", action_id = "42390"},
+					{spacing_vertical = "0"},
+					{separator_horizontal = "3", separator_color = "#3F3F48", separator_length = 300 },
+					{spacing_vertical = "7"},
+					{key = "Item: Set cursor to next take marker in selected items", action_id = "42394"},
+					{key = "Item: Set cursor to previous take marker in selected items", action_id = "42393"},
+					{spacing_vertical = "0"},
+					{separator_horizontal = "3", separator_color = "#3F3F48", separator_length = 300 },
+					{spacing_vertical = "7"},
+					{key = "Item: Delete all take markers", action_id = "42387"},
+					{key = "Delete Take Markers Select Item Or Time Selection", action_function = function() DeleteTakeMarkersSelectItemOrTimeSelection() end},
+				},
+			}
 			
-			cboc2 ( " Item: Delete all take markers ", function() reaper.Main_OnCommand(42387, 0) end, 0, 25 )
-			cboc2 ( " Delete Take Markers Select Item Or Time Selection ", function() DeleteTakeMarkersSelectItemOrTimeSelection() end, 0, 25 )
+			TreeNodeLibraryOutput(insert_empty_item_chord_library) -- передаём корневой элемент
+			
 		elseif selected_content == "Item_Move_Content_Show" then
 			reaper.ImGui_SeparatorText( ctx, "Item Move" )
 			cboc2 ( " Item edit: Move contents of items left ", function() reaper.Main_OnCommand(40123, 0) end, 0, 25 )
@@ -6359,6 +6539,37 @@ local function main()
 			
 			end
 			
+		elseif selected_content == "Time_Selection_Content_Show" then
+			-- reaper.ImGui_SeparatorText( ctx, " Time Selection " )
+			
+			local library_time_selection = {
+				key = "Time Selection", default_open = true, children = {
+					
+					-- {spacing_vertical = "1"},
+					-- {separator_horizontal = "2", separator_color = "#EBEBEB" },
+					-- {spacing_vertical = "7"},
+					-- {separator_horizontal = "ImGui_SeparatorText", separator_text = "Text"},
+					-- {separator_horizontal = "3", separator_color = "#3F3F48", separator_length = 148 },
+					
+					{key = "Time selection: Insert empty space at time selection (moving later items)", action_id = "40200"},
+					{key = "Time selection: Set time selection to items", action_id = "40290"},
+					{key = "Time selection: Remove (unselect) time selection", action_id = "40635"},
+					{key = "Time selection: Remove contents of time selection (moving later items)", action_id = "40201"},
+					
+					--[[
+					{key = "User Functions", children = {
+						{key = "Command ID 1", action_id = "41930"},
+						{key = "Command ID 2", action_id = "_RS251990727759d3dff9cf84df740cd6a87ea0d169"},
+						{key = "User Function 2", action_function = function() reaper.Main_OnCommand(40772, 0) end},
+						{key = "User Function 3", action_function = function() us_fn1() end},
+					}},
+					]]--
+				},
+			}
+			
+			TreeNodeLibraryOutput(library_time_selection) -- передаём корневой элемент
+			reaper.ImGui_Dummy(ctx, 0, 20)  -- Добавление вертикального пространства
+		
 		elseif selected_content == "Grid_Content_Show" then
 			reaper.ImGui_SeparatorText( ctx, " Grid " )
 			
@@ -6691,6 +6902,7 @@ local function main()
 					{key = "Automation: Toggle track between touch and trim/read modes", action_id = "41109"},
 					{spacing_vertical = "8"},
 					
+					{key = "Track: Toggle all track grouping enabled", action_id = "40771"},
 					{key = "Track: Set track grouping parameters", action_id = "40772"},
 					{key = "Options: Show FX inserts in TCP", action_id = "40302"},
 					{key = "Track: Toggle show/hide in TCP", action_id = "40853"},
@@ -6721,10 +6933,34 @@ local function main()
 		elseif selected_content == "Insert_Empty_Item_Chord_Content_Show" then
 			reaper.ImGui_SeparatorText( ctx, " Insert Empty Item Chord Selected Track " )
 			
-			cboc2(" Insert Item Chord ", function()
-				selected_content = "Insert_Item_Chord_Content_Show"
-				reaper.SetExtState("MaxMusicMax_ImGuiAlphaWindow", "ImGuiCurrentMenuItem", selected_content, true) 
-			end, 0, 25)
+			-- cboc2(" Insert Item Chord ", function()
+				-- selected_content = "Insert_Item_Chord_Content_Show"
+				-- reaper.SetExtState("MaxMusicMax_ImGuiAlphaWindow", "ImGuiCurrentMenuItem", selected_content, true) 
+			-- end, 0, 25)
+			
+			local library_item_chord_menu = {
+				key = "Item Chord Menu", default_open = false, children = {
+					-- {spacing_vertical = "0"},
+					-- {separator_horizontal = "3", separator_color = "#3F3F48", separator_length = 148 },
+					-- {spacing_vertical = "7"},
+					{key = "Chord Detection", action_function = function() selected_content = "Chord_Detection_Content_Show" reaper.SetExtState("MaxMusicMax_ImGuiAlphaWindow", "ImGuiCurrentMenuItem", selected_content, true)  end},
+					{spacing_vertical = "0"},
+					{separator_horizontal = "2", separator_color = "#3F3F48", separator_length = 148 },
+					{spacing_vertical = "7"},
+					{key = "Insert Item Chord", action_function = function() selected_content = "Insert_Item_Chord_Content_Show" reaper.SetExtState("MaxMusicMax_ImGuiAlphaWindow", "ImGuiCurrentMenuItem", selected_content, true)  end},
+					{key = "Insert Item Chord Empty", action_function = function() selected_content = "Insert_Empty_Item_Chord_Content_Show" reaper.SetExtState("MaxMusicMax_ImGuiAlphaWindow", "ImGuiCurrentMenuItem", selected_content, true)  end},
+					{spacing_vertical = "0"},
+					{separator_horizontal = "2", separator_color = "#3F3F48", separator_length = 148 },
+					{spacing_vertical = "7"},
+					{key = "Set Name Selected Track Or Item", action_function = function() selected_content = "Track_Set_Name_Content_Show" reaper.SetExtState("MaxMusicMax_ImGuiAlphaWindow", "ImGuiCurrentMenuItem", selected_content, true)  end},
+
+				},
+			}
+				
+			TreeNodeLibraryOutput(library_item_chord_menu) -- передаём корневой элемент
+			
+			
+			
 			reaper.ImGui_Dummy(ctx, 0, 10)  -- Добавление вертикального пространства
 			
 			local chord_ulaYkZjtGm = reaper.GetExtState("chord_ulaYkZjtGm", "chord_value_ulaYkZjtGm")
@@ -6936,7 +7172,7 @@ local function main()
 
 				reaper.ImGui_TableSetupColumn(ctx, "Col 1", reaper.ImGui_TableColumnFlags_WidthFixed(), 100)
 				reaper.ImGui_TableSetupColumn(ctx, "Col 2", reaper.ImGui_TableColumnFlags_WidthFixed(), 90)
-				reaper.ImGui_TableSetupColumn(ctx, "Col 3", reaper.ImGui_TableColumnFlags_WidthFixed(), 320)
+				reaper.ImGui_TableSetupColumn(ctx, "Col 3", reaper.ImGui_TableColumnFlags_WidthFixed(), 500)
 
 				reaper.ImGui_TableNextRow(ctx)
 				
@@ -6969,11 +7205,32 @@ local function main()
 		elseif selected_content == "Track_Set_Name_Content_Show" then
 			reaper.ImGui_SeparatorText( ctx, " Set Name Selected Track Or Item " )
 			
+			local library_item_chord_menu = {
+				key = "Item Chord Menu", default_open = false, children = {
+					-- {spacing_vertical = "0"},
+					-- {separator_horizontal = "3", separator_color = "#3F3F48", separator_length = 148 },
+					-- {spacing_vertical = "7"},
+					{key = "Chord Detection", action_function = function() selected_content = "Chord_Detection_Content_Show" reaper.SetExtState("MaxMusicMax_ImGuiAlphaWindow", "ImGuiCurrentMenuItem", selected_content, true)  end},
+					{spacing_vertical = "0"},
+					{separator_horizontal = "2", separator_color = "#3F3F48", separator_length = 148 },
+					{spacing_vertical = "7"},
+					{key = "Insert Item Chord", action_function = function() selected_content = "Insert_Item_Chord_Content_Show" reaper.SetExtState("MaxMusicMax_ImGuiAlphaWindow", "ImGuiCurrentMenuItem", selected_content, true)  end},
+					{key = "Insert Item Chord Empty", action_function = function() selected_content = "Insert_Empty_Item_Chord_Content_Show" reaper.SetExtState("MaxMusicMax_ImGuiAlphaWindow", "ImGuiCurrentMenuItem", selected_content, true)  end},
+					{spacing_vertical = "0"},
+					{separator_horizontal = "2", separator_color = "#3F3F48", separator_length = 148 },
+					{spacing_vertical = "7"},
+					{key = "Set Name Selected Track Or Item", action_function = function() selected_content = "Track_Set_Name_Content_Show" reaper.SetExtState("MaxMusicMax_ImGuiAlphaWindow", "ImGuiCurrentMenuItem", selected_content, true)  end},
+
+				},
+			}
+				
+			TreeNodeLibraryOutput(library_item_chord_menu) -- передаём корневой элемент
+			
+			
 			-- library_name_track_item
 			local library_name_track_item = {
 				key = "Name Library", children = {
-		
-					
+				
 					{spacing_vertical = "1"},
 					{separator_horizontal = "2", separator_color = "#636372" },
 					{spacing_vertical = "7"},
@@ -7507,33 +7764,9 @@ local function main()
 			reaper.ImGui_Text(ctx, '\n')
 		elseif selected_content == "Other_Content_Show" then
 			reaper.ImGui_SeparatorText( ctx, "Item Other Settings" )
-			cboc2 ( " Item ReName Empty Line ", function() ItemReNameEmptyLine() end, 0, 25 )
-			reaper.ImGui_Dummy(ctx, 0, 20)  -- Добавление вертикального пространства
-			cboc2 ( " Item navigation: Move cursor to start of items ", function() reaper.Main_OnCommand(41173, 0) end, 0, 25 )
-			cboc2 ( " Item navigation: Move cursor to end of items ", function() reaper.Main_OnCommand(41174, 0) end, 0, 25 )
-			reaper.ImGui_Dummy(ctx, 0, 20)  -- Добавление вертикального пространства
-			cboc2 ( " Track properties: Free item positioning ", function() reaper.Main_OnCommand(40641, 0) end, 0, 25 )
-			reaper.ImGui_Dummy(ctx, 0, 20)  -- Добавление вертикального пространства
-			cboc2 ( " Item properties: Toggle take reverse ", function() reaper.Main_OnCommand(41051, 0) end, 0, 25 )
-			cboc2 ( " Item: Delete all take markers ", function() reaper.Main_OnCommand(42387, 0) end, 0, 25 )
-			cboc2 ( " Item properties: Set item rate to 1.0 ", function() reaper.Main_OnCommand(40652, 0) end, 0, 25 )
-			cboc2 ( " Item: Reset items volume to +0dB ", function() reaper.Main_OnCommand(41923, 0) end, 0, 25 )
-			cboc2 ( " Item properties: Display item time ruler ", function() reaper.Main_OnCommand(42312, 0) end, 0, 25 )
-			reaper.ImGui_Dummy(ctx, 0, 20)  -- Добавление вертикального пространства
-			CreateCommandCheckbox (40070, "Options: Move envelope points with media items")
-			-- cboc2 ( " Options: Move envelope points with media items ", function() reaper.Main_OnCommand(40070, 0) end, 0, 25 )
-			cboc2 ( " Options: Auto-crossfade media items when editing ", function() reaper.Main_OnCommand(40041, 0) end, 0, 25 )
-			reaper.ImGui_Dummy(ctx, 0, 20)  -- Добавление вертикального пространства
-			cboc2 ( " View: Toggle show/hide item labels ", function() reaper.Main_OnCommand(40651, 0) end, 0, 25 )
-		elseif selected_content == "Item_Grouping_Content_Show" then
-			reaper.ImGui_SeparatorText( ctx, "Item Grouping" )
 			
-			CreateCommandCheckbox (1156, "Options: Toggle item grouping override")
-			CreateCommandCheckbox (41156, "Options: Selecting one grouped item selects group")
-			reaper.ImGui_Dummy(ctx, 0, 20)  -- Добавление вертикального пространства
-			
-			local library_grouping_items = {
-				key = "Item Grouping", default_open = true, children = {
+			local library_item_other_settings = {
+				key = "Item Other Settings", default_open = true, children = {
 					
 					-- {spacing_vertical = "1"},
 					-- {separator_horizontal = "2", separator_color = "#EBEBEB" },
@@ -7544,6 +7777,77 @@ local function main()
 					-- {key = "Options: Toggle item grouping override", action_id = "1156"},
 					-- {key = "Options: Selecting one grouped item selects group", action_id = "41156"},
 					-- {spacing_vertical = "12"},
+					
+					-- {separator_horizontal = "ImGui_SeparatorText", separator_text = "Item Grouping"},
+					{key = "Item ReName Empty Line", action_function = function() ItemReNameEmptyLine() end},
+					{key = "Item navigation: Move cursor to start of items", action_id = "41173"},
+					{key = "Item navigation: Move cursor to end of items", action_id = "41174"},
+					{key = "Track properties: Free item positioning", action_id = "40641"},
+					{spacing_vertical = "1"},
+					{separator_horizontal = "3", separator_color = "#3F3F48", separator_length = 500 },
+					{spacing_vertical = "7"},
+					
+					{key = "Item properties: Toggle take reverse", action_id = "41051"},
+					{key = "Item: Delete all take markers", action_id = "42387"},
+					{key = "Item properties: Set item rate to 1.0", action_id = "40652"},
+					{key = "Item: Reset items volume to +0dB", action_id = "41923"},
+					{key = "Item properties: Display item time ruler", action_id = "42312"},
+					{key = "Options: Auto-crossfade media items when editing", action_id = "40041"},
+					{key = "View: Toggle show/hide item labels", action_id = "40651"},
+					{key = "Options: Move envelope points with media items", action_id = "40070"},
+		
+					--[[
+					{key = "User Functions", children = {
+						{key = "Command ID 1", action_id = "41930"},
+						{key = "Command ID 2", action_id = "_RS251990727759d3dff9cf84df740cd6a87ea0d169"},
+						{key = "User Function 2", action_function = function() reaper.Main_OnCommand(40772, 0) end},
+						{key = "User Function 3", action_function = function() us_fn1() end},
+					}},
+					]]--
+				},
+			}
+			
+			TreeNodeLibraryOutput(library_item_other_settings) -- передаём корневой элемент
+			
+			-- cboc2 ( " Item ReName Empty Line ", function() ItemReNameEmptyLine() end, 0, 25 )
+			-- reaper.ImGui_Dummy(ctx, 0, 20)  -- Добавление вертикального пространства
+			-- cboc2 ( " Item navigation: Move cursor to start of items ", function() reaper.Main_OnCommand(41173, 0) end, 0, 25 )
+			-- cboc2 ( " Item navigation: Move cursor to end of items ", function() reaper.Main_OnCommand(41174, 0) end, 0, 25 )
+			-- reaper.ImGui_Dummy(ctx, 0, 20)  -- Добавление вертикального пространства
+			-- cboc2 ( " Track properties: Free item positioning ", function() reaper.Main_OnCommand(40641, 0) end, 0, 25 )
+			-- reaper.ImGui_Dummy(ctx, 0, 20)  -- Добавление вертикального пространства
+			-- cboc2 ( " Item properties: Toggle take reverse ", function() reaper.Main_OnCommand(41051, 0) end, 0, 25 )
+			-- cboc2 ( " Item: Delete all take markers ", function() reaper.Main_OnCommand(42387, 0) end, 0, 25 )
+			-- cboc2 ( " Item properties: Set item rate to 1.0 ", function() reaper.Main_OnCommand(40652, 0) end, 0, 25 )
+			-- cboc2 ( " Item: Reset items volume to +0dB ", function() reaper.Main_OnCommand(41923, 0) end, 0, 25 )
+			-- cboc2 ( " Item properties: Display item time ruler ", function() reaper.Main_OnCommand(42312, 0) end, 0, 25 )
+			-- reaper.ImGui_Dummy(ctx, 0, 20)  -- Добавление вертикального пространства
+			-- CreateCommandCheckbox (40070, "Options: Move envelope points with media items")
+			-- cboc2 ( " Options: Move envelope points with media items ", function() reaper.Main_OnCommand(40070, 0) end, 0, 25 )
+			-- cboc2 ( " Options: Auto-crossfade media items when editing ", function() reaper.Main_OnCommand(40041, 0) end, 0, 25 )
+			-- reaper.ImGui_Dummy(ctx, 0, 20)  -- Добавление вертикального пространства
+			-- cboc2 ( " View: Toggle show/hide item labels ", function() reaper.Main_OnCommand(40651, 0) end, 0, 25 )
+		elseif selected_content == "Item_Grouping_Content_Show" then
+			reaper.ImGui_SeparatorText( ctx, "Item Grouping" )
+			
+			-- CreateCommandCheckbox (1156, "Options: Toggle item grouping override")
+			-- CreateCommandCheckbox (41156, "Options: Selecting one grouped item selects group")
+			-- reaper.ImGui_Dummy(ctx, 0, 20)  -- Добавление вертикального пространства
+			
+			local library_grouping_items = {
+				key = "Item Grouping", default_open = true, children = {
+					
+					-- {spacing_vertical = "1"},
+					-- {separator_horizontal = "2", separator_color = "#EBEBEB" },
+					-- {spacing_vertical = "7"},
+					-- {separator_horizontal = "ImGui_SeparatorText", separator_text = "Text"},
+					-- {separator_horizontal = "3", separator_color = "#3F3F48", separator_length = 148 },
+					
+					{key = "Options: Toggle item grouping override", action_id = "1156"},
+					{key = "Options: Selecting one grouped item selects group", action_id = "41156"},
+					{spacing_vertical = "1"},
+					{separator_horizontal = "3", separator_color = "#3F3F48", separator_length = 500 },
+					{spacing_vertical = "7"},
 					
 					-- {separator_horizontal = "ImGui_SeparatorText", separator_text = "Item Grouping"},
 					{key = "Item grouping: Group items", action_id = "40032"},
@@ -7876,6 +8180,7 @@ local function main()
 					-- {separator_horizontal = "2", separator_color = "#EBEBEB" },
 					-- {spacing_vertical = "7"},
 					-- {separator_horizontal = "ImGui_SeparatorText", separator_text = "Text"},
+					{key = "Item: Quantize item positions to grid", action_id = "40316"},
 					{key = "Item edit: Move left edge of item to edit cursor", action_id = "41306"},
 					{key = "SWS: Quantize item's edges to grid (change length)", action_id = "_SWS_QUANTITEEDGES"},
 					-- {key = "www", action_id = "www"},
